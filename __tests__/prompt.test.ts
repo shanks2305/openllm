@@ -1,4 +1,8 @@
-import { fitContext, messagesToTurns, titleFromMessages } from '../src/chat/prompt';
+import {
+  fitContext,
+  messagesToTurns,
+  titleFromMessages,
+} from '../src/chat/prompt';
 import type { ChatMessage } from '../src/chat/types';
 
 function message(
@@ -43,11 +47,43 @@ describe('messagesToTurns', () => {
   });
 
   it('always keeps the latest message even when it is long', () => {
-    const turns = fitContext([
-      { role: 'user', content: 'x'.repeat(20000) },
-    ]);
+    const turns = fitContext([{ role: 'user', content: 'x'.repeat(20000) }]);
 
     expect(turns).toHaveLength(1);
     expect(turns[0].content).toHaveLength(20000);
+  });
+
+  it('keeps older turns that fit the token budget', () => {
+    const turns = fitContext(
+      [
+        { role: 'user', content: 'a'.repeat(400) },
+        { role: 'user', content: 'latest' },
+      ],
+      120,
+    );
+
+    expect(turns.map(turn => turn.content)).toEqual([
+      'a'.repeat(400),
+      'latest',
+    ]);
+  });
+
+  it('drops older turns that exceed the token budget', () => {
+    const turns = fitContext(
+      [
+        { role: 'system', content: 'rules' },
+        { role: 'user', content: 'a'.repeat(800) },
+        { role: 'assistant', content: 'b'.repeat(400) },
+        { role: 'user', content: 'latest' },
+      ],
+      120,
+    );
+
+    expect(turns.map(turn => turn.role)).toEqual([
+      'system',
+      'assistant',
+      'user',
+    ]);
+    expect(turns.some(turn => turn.content.startsWith('aaa'))).toBe(false);
   });
 });

@@ -10,4 +10,7 @@ export type Conversation = {
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
+  modelId?: string;
+  systemPrompt?: string;
+  titleCustom?: boolean;
 };

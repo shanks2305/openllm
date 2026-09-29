@@ -28,3 +28,13 @@ export type DownloadProgress = {
   bytesWritten: number;
   contentLength: number;
 };
+
+export type InterruptedDownload = {
+  id: string;
+  name: string;
+  url: string;
+  source: ModelSource;
+  origin: string;
+  expectedBytes: number;
+  bytesWritten: number;
+};

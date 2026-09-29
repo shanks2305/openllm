@@ -30,7 +30,8 @@ export function useModels() {
       await task();
       return true;
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Something went wrong';
+      const message =
+        err instanceof Error ? err.message : 'Something went wrong';
       setError(message);
       return false;
     } finally {
@@ -68,6 +69,16 @@ export function useModels() {
     modelManager.cancelDownload(id);
   }, []);
 
+  const resumeDownload = useCallback(
+    (id: string) => run(() => modelManager.resume(id)),
+    [run],
+  );
+
+  const discardDownload = useCallback(
+    (id: string) => run(() => modelManager.discardPartial(id)),
+    [run],
+  );
+
   return {
     ...state,
     busy,
@@ -78,5 +89,7 @@ export function useModels() {
     select,
     remove,
     cancelDownload,
+    resumeDownload,
+    discardDownload,
   };
 }

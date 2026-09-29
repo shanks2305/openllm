@@ -1,29 +1,30 @@
-import { useState } from 'react';
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { hapticTap } from '../../haptics';
 import { colors, radii, spacing, typography } from '../../theme';
 
 type ComposerProps = {
+  value: string;
+  onChangeText: (value: string) => void;
   generating: boolean;
   hasModel?: boolean;
+  editing?: boolean;
+  onCancelEdit?: () => void;
   onSend: (text: string) => void;
   onStop: () => void;
 };
 
 export function Composer({
+  value,
+  onChangeText,
   generating,
   hasModel = true,
+  editing = false,
+  onCancelEdit,
   onSend,
   onStop,
 }: ComposerProps) {
   const insets = useSafeAreaInsets();
-  const [value, setValue] = useState('');
   const canSend = value.trim().length > 0 && !generating && hasModel;
 
   const submit = () => {
@@ -31,16 +32,35 @@ export function Composer({
       return;
     }
 
+    hapticTap();
     onSend(value);
-    setValue('');
   };
 
   return (
-    <View style={[styles.wrap, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+    <View
+      style={[
+        styles.wrap,
+        { paddingBottom: Math.max(insets.bottom, spacing.sm) },
+      ]}
+    >
+      {editing ? (
+        <View style={styles.editing}>
+          <Text style={styles.editingLabel}>
+            Editing this message replaces the replies after it.
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Cancel edit"
+            onPress={onCancelEdit}
+          >
+            <Text style={styles.cancel}>Cancel</Text>
+          </Pressable>
+        </View>
+      ) : null}
       <View style={styles.bar}>
         <TextInput
           value={value}
-          onChangeText={setValue}
+          onChangeText={onChangeText}
           placeholder={hasModel ? 'Message' : 'Choose a model to chat'}
           placeholderTextColor={colors.textMuted}
           style={styles.input}
@@ -54,8 +74,16 @@ export function Composer({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Stop generating"
-            onPress={onStop}
-            style={({ pressed }) => [styles.action, styles.stop, { opacity: pressed ? 0.75 : 1 }]}>
+            onPress={() => {
+              hapticTap();
+              onStop();
+            }}
+            style={({ pressed }) => [
+              styles.action,
+              styles.stop,
+              { opacity: pressed ? 0.75 : 1 },
+            ]}
+          >
             <View style={styles.stopIcon} />
           </Pressable>
         ) : (
@@ -68,7 +96,8 @@ export function Composer({
               styles.action,
               canSend ? styles.sendEnabled : styles.sendDisabled,
               { opacity: pressed && canSend ? 0.75 : 1 },
-            ]}>
+            ]}
+          >
             <Text style={styles.sendLabel}>↑</Text>
           </Pressable>
         )}
@@ -84,6 +113,22 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: colors.background,
+  },
+  editing: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  editingLabel: {
+    ...typography.caption,
+    flex: 1,
+    lineHeight: 18,
+  },
+  cancel: {
+    ...typography.caption,
+    color: colors.accent,
+    fontWeight: '600',
   },
   bar: {
     flexDirection: 'row',

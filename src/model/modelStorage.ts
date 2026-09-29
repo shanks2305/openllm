@@ -5,6 +5,7 @@ import type { Manifest } from './types';
 
 type LlamaNative = {
   readFilePrefix?: (path: string, length: number) => Promise<string>;
+  appendFile?: (source: string, dest: string) => Promise<boolean>;
 };
 
 const Llama = NativeModules.Llama as LlamaNative | undefined;
@@ -24,6 +25,40 @@ export const emptyManifest = (): Manifest => ({
 
 export function modelFilePath(id: string) {
   return `${modelsDir()}/${id}.gguf`;
+}
+
+export function partialModelPath(id: string) {
+  return `${modelFilePath(id)}.part`;
+}
+
+export function partialMetaPath(id: string) {
+  return `${partialModelPath(id)}.json`;
+}
+
+export function partialRestPath(id: string) {
+  return `${partialModelPath(id)}.rest`;
+}
+
+export function storageNote(sizeBytes: number) {
+  if (sizeBytes >= 1_800_000_000) {
+    return 'Plan on about 2 GB of disk and extra RAM.';
+  }
+
+  if (sizeBytes >= 1_000_000_000) {
+    return 'Needs a device with more free storage and RAM.';
+  }
+
+  return '';
+}
+
+export async function appendFile(source: string, dest: string) {
+  const llama = NativeModules.Llama as LlamaNative | undefined;
+
+  if (!llama?.appendFile) {
+    throw new Error('Resume is unavailable until the iOS app is rebuilt');
+  }
+
+  await llama.appendFile(source, dest);
 }
 
 export function toFsPath(uri: string) {
@@ -72,7 +107,11 @@ export async function readManifest(): Promise<Manifest> {
 
 export async function writeManifest(manifest: Manifest) {
   await ensureModelsDir();
-  await RNFS.writeFile(manifestPath(), JSON.stringify(manifest, null, 2), 'utf8');
+  await RNFS.writeFile(
+    manifestPath(),
+    JSON.stringify(manifest, null, 2),
+    'utf8',
+  );
 }
 
 export async function getFreeBytes() {

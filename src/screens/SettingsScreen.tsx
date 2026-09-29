@@ -16,7 +16,10 @@ import type { RootStackParamList } from '../navigation/AppNavigator';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { useModels } from '../hooks/useModels';
 import { useSettings } from '../hooks/useSettings';
-import { MAX_TOKEN_OPTIONS } from '../settings/settingsStore';
+import {
+  CONTEXT_SIZE_OPTIONS,
+  maxTokensForContext,
+} from '../settings/settingsStore';
 
 type SettingsNav = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
 
@@ -27,24 +30,34 @@ const SettingsScreen = () => {
   const {
     temperature,
     maxTokens,
+    contextSize,
+    topP,
+    repeatPenalty,
     systemPrompt,
+    saveError,
     setTemperature,
     setMaxTokens,
+    setContextSize,
+    setTopP,
+    setRepeatPenalty,
     setSystemPrompt,
   } = useSettings();
+  const tokenOptions = maxTokensForContext(contextSize);
 
   return (
     <View style={styles.flex}>
       <ScreenHeader title="Settings" onBack={() => navigation.goBack()} />
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         <ScrollView
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={[
             styles.body,
             { paddingBottom: insets.bottom + spacing.lg },
-          ]}>
+          ]}
+        >
           <Text style={styles.section}>General</Text>
           <Pressable
             accessibilityRole="button"
@@ -53,7 +66,8 @@ const SettingsScreen = () => {
             style={({ pressed }) => [
               styles.row,
               { opacity: pressed ? 0.75 : 1 },
-            ]}>
+            ]}
+          >
             <View style={styles.rowText}>
               <Text style={styles.rowTitle}>Models</Text>
               <Text style={styles.rowSubtitle} numberOfLines={1}>
@@ -64,6 +78,7 @@ const SettingsScreen = () => {
           </Pressable>
 
           <Text style={styles.section}>Generation</Text>
+          {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
           <View style={styles.card}>
             <Text style={styles.rowTitle}>Temperature</Text>
             <Text style={styles.rowSubtitle}>
@@ -74,7 +89,8 @@ const SettingsScreen = () => {
                 accessibilityRole="button"
                 accessibilityLabel="Decrease temperature"
                 onPress={() => setTemperature(temperature - 0.1)}
-                style={styles.stepButton}>
+                style={styles.stepButton}
+              >
                 <Text style={styles.stepLabel}>−</Text>
               </Pressable>
               <Text style={styles.stepValue}>{temperature.toFixed(1)}</Text>
@@ -82,7 +98,92 @@ const SettingsScreen = () => {
                 accessibilityRole="button"
                 accessibilityLabel="Increase temperature"
                 onPress={() => setTemperature(temperature + 0.1)}
-                style={styles.stepButton}>
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Context size</Text>
+            <Text style={styles.rowSubtitle}>
+              How much of the conversation the model can read. Larger sizes use
+              more memory, and response length stays within half of this.
+            </Text>
+            <View style={styles.chips}>
+              {CONTEXT_SIZE_OPTIONS.map(option => {
+                const selected = option === contextSize;
+
+                return (
+                  <Pressable
+                    key={option}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => setContextSize(option)}
+                    style={[styles.chip, selected && styles.chipSelected]}
+                  >
+                    <Text
+                      style={[
+                        styles.chipLabel,
+                        selected && styles.chipLabelSelected,
+                      ]}
+                    >
+                      {option}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Top-p</Text>
+            <Text style={styles.rowSubtitle}>
+              Lower values stay on the most likely words.
+            </Text>
+            <View style={styles.stepper}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Decrease top-p"
+                onPress={() => setTopP(topP - 0.05)}
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>−</Text>
+              </Pressable>
+              <Text style={styles.stepValue}>{topP.toFixed(2)}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Increase top-p"
+                onPress={() => setTopP(topP + 0.05)}
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Repeat penalty</Text>
+            <Text style={styles.rowSubtitle}>
+              Slightly above 1 reduces repeated phrases.
+            </Text>
+            <View style={styles.stepper}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Decrease repeat penalty"
+                onPress={() => setRepeatPenalty(repeatPenalty - 0.1)}
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>−</Text>
+              </Pressable>
+              <Text style={styles.stepValue}>{repeatPenalty.toFixed(1)}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Increase repeat penalty"
+                onPress={() => setRepeatPenalty(repeatPenalty + 0.1)}
+                style={styles.stepButton}
+              >
                 <Text style={styles.stepLabel}>+</Text>
               </Pressable>
             </View>
@@ -94,7 +195,7 @@ const SettingsScreen = () => {
               Maximum new tokens for each reply.
             </Text>
             <View style={styles.chips}>
-              {MAX_TOKEN_OPTIONS.map(option => {
+              {tokenOptions.map(option => {
                 const selected = option === maxTokens;
 
                 return (
@@ -103,12 +204,14 @@ const SettingsScreen = () => {
                     accessibilityRole="button"
                     accessibilityState={{ selected }}
                     onPress={() => setMaxTokens(option)}
-                    style={[styles.chip, selected && styles.chipSelected]}>
+                    style={[styles.chip, selected && styles.chipSelected]}
+                  >
                     <Text
                       style={[
                         styles.chipLabel,
                         selected && styles.chipLabelSelected,
-                      ]}>
+                      ]}
+                    >
                       {option}
                     </Text>
                   </Pressable>
@@ -120,7 +223,7 @@ const SettingsScreen = () => {
           <View style={styles.card}>
             <Text style={styles.rowTitle}>System prompt</Text>
             <Text style={styles.rowSubtitle}>
-              Optional instructions included with every reply.
+              Optional instructions for every chat that does not set its own.
             </Text>
             <TextInput
               value={systemPrompt}
@@ -176,6 +279,10 @@ const styles = StyleSheet.create({
     ...typography.caption,
     marginTop: 4,
     lineHeight: 18,
+  },
+  error: {
+    ...typography.caption,
+    color: colors.danger,
   },
   chevron: {
     color: colors.textMuted,

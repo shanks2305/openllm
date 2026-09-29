@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Dimensions,
   Modal,
@@ -7,6 +8,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +20,7 @@ const PANEL_WIDTH = Math.min(320, Math.round(SCREEN_WIDTH * 0.82));
 export type SidebarChat = {
   id: string;
   title: string;
+  modelName?: string;
 };
 
 type ChatSidebarProps = {
@@ -29,6 +32,7 @@ type ChatSidebarProps = {
   onNewChat: () => void;
   onOpenChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
+  onRenameChat: (id: string, title: string) => void;
   onOpenModels: () => void;
   onOpenSettings: () => void;
 };
@@ -42,17 +46,27 @@ export function ChatSidebar({
   onNewChat,
   onOpenChat,
   onDeleteChat,
+  onRenameChat,
   onOpenModels,
   onOpenSettings,
 }: ChatSidebarProps) {
   const insets = useSafeAreaInsets();
   const translateX = useRef(new Animated.Value(-PANEL_WIDTH)).current;
   const overlay = useRef(new Animated.Value(0)).current;
+  const [query, setQuery] = useState('');
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
+  const trimmedQuery = query.trim().toLowerCase();
+  const visibleChats = trimmedQuery
+    ? chats.filter(chat => chat.title.toLowerCase().includes(trimmedQuery))
+    : chats;
 
   useEffect(() => {
     if (!visible) {
       translateX.setValue(-PANEL_WIDTH);
       overlay.setValue(0);
+      setQuery('');
+      setRenamingId(null);
       return;
     }
 
@@ -94,7 +108,8 @@ export function ChatSidebar({
       visible={visible}
       transparent
       animationType="none"
-      onRequestClose={dismiss}>
+      onRequestClose={dismiss}
+    >
       <View style={styles.root}>
         <Animated.View
           style={[
@@ -102,7 +117,8 @@ export function ChatSidebar({
             {
               opacity: overlay,
             },
-          ]}>
+          ]}
+        >
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close sidebar"
@@ -120,7 +136,8 @@ export function ChatSidebar({
               paddingBottom: insets.bottom + spacing.md,
               transform: [{ translateX }],
             },
-          ]}>
+          ]}
+        >
           <Text style={styles.brand}>llmOS</Text>
           <Pressable
             accessibilityRole="button"
@@ -129,40 +146,106 @@ export function ChatSidebar({
             style={({ pressed }) => [
               styles.newChat,
               { opacity: pressed ? 0.8 : 1 },
-            ]}>
+            ]}
+          >
             <Text style={styles.newChatLabel}>+ New chat</Text>
           </Pressable>
 
           <Text style={styles.section}>Chats</Text>
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search chats"
+            placeholderTextColor={colors.textMuted}
+            autoCorrect={false}
+            style={styles.search}
+          />
           <ScrollView
             style={styles.chatList}
             contentContainerStyle={styles.chatListContent}
-            showsVerticalScrollIndicator={false}>
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
             {chats.length === 0 ? (
               <Text style={styles.empty}>No conversations yet</Text>
+            ) : visibleChats.length === 0 ? (
+              <Text style={styles.empty}>No matching chats</Text>
             ) : (
-              chats.map(chat => {
+              visibleChats.map(chat => {
                 const isActive = chat.id === activeId;
+                const renaming = renamingId === chat.id;
+
+                if (renaming) {
+                  return (
+                    <View key={chat.id} style={styles.renameBox}>
+                      <TextInput
+                        value={renameValue}
+                        onChangeText={setRenameValue}
+                        autoFocus
+                        style={styles.renameInput}
+                      />
+                      <View style={styles.renameActions}>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => setRenamingId(null)}
+                        >
+                          <Text style={styles.renameCancel}>Cancel</Text>
+                        </Pressable>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => {
+                            onRenameChat(chat.id, renameValue);
+                            setRenamingId(null);
+                          }}
+                        >
+                          <Text style={styles.renameSave}>Save</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  );
+                }
 
                 return (
                   <Pressable
                     key={chat.id}
                     accessibilityRole="button"
                     accessibilityLabel={chat.title}
-                    accessibilityHint="Long press to delete"
+                    accessibilityHint="Long press to rename or delete"
                     onPress={() => {
                       onOpenChat(chat.id);
                       dismiss();
                     }}
-                    onLongPress={() => onDeleteChat(chat.id)}
+                    onLongPress={() => {
+                      Alert.alert(chat.title, 'Rename or delete this chat.', [
+                        {
+                          text: 'Rename',
+                          onPress: () => {
+                            setRenamingId(chat.id);
+                            setRenameValue(chat.title);
+                          },
+                        },
+                        {
+                          text: 'Delete',
+                          style: 'destructive',
+                          onPress: () => onDeleteChat(chat.id),
+                        },
+                        { text: 'Cancel', style: 'cancel' },
+                      ]);
+                    }}
                     style={({ pressed }) => [
                       styles.chatRow,
                       isActive && styles.chatRowActive,
                       { opacity: pressed ? 0.8 : 1 },
-                    ]}>
+                    ]}
+                  >
                     <Text style={styles.chatTitle} numberOfLines={1}>
                       {chat.title}
                     </Text>
+                    {chat.modelName ? (
+                      <Text style={styles.chatModel} numberOfLines={1}>
+                        {chat.modelName}
+                      </Text>
+                    ) : null}
                   </Pressable>
                 );
               })
@@ -176,7 +259,8 @@ export function ChatSidebar({
             style={({ pressed }) => [
               styles.navRow,
               { opacity: pressed ? 0.75 : 1 },
-            ]}>
+            ]}
+          >
             <View style={styles.navText}>
               <Text style={styles.navTitle}>Models</Text>
               <Text style={styles.navSubtitle} numberOfLines={1}>
@@ -192,7 +276,8 @@ export function ChatSidebar({
             style={({ pressed }) => [
               styles.navRow,
               { opacity: pressed ? 0.75 : 1 },
-            ]}>
+            ]}
+          >
             <Text style={styles.navTitle}>Settings</Text>
             <Text style={styles.chevron}>›</Text>
           </Pressable>
@@ -243,6 +328,46 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
     marginBottom: spacing.sm,
   },
+  search: {
+    ...typography.body,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  renameBox: {
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  renameInput: {
+    ...typography.body,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.background,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  renameActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.md,
+  },
+  renameCancel: {
+    ...typography.caption,
+    color: colors.textMuted,
+    fontWeight: '600',
+  },
+  renameSave: {
+    ...typography.caption,
+    color: colors.accent,
+    fontWeight: '600',
+  },
   chatRow: {
     borderRadius: radii.md,
     paddingHorizontal: spacing.sm,
@@ -254,6 +379,10 @@ const styles = StyleSheet.create({
   chatTitle: {
     ...typography.body,
     fontSize: 15,
+  },
+  chatModel: {
+    ...typography.caption,
+    marginTop: 2,
   },
   chatList: {
     flex: 1,

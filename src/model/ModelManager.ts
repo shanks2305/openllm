@@ -2,6 +2,7 @@ import RNFS from 'react-native-fs';
 
 import { getCatalogModel, MODEL_CATALOG } from './catalog';
 import {
+  appendFile,
   assertGgufFile,
   copyFile,
   ensureModelsDir,
@@ -10,7 +11,11 @@ import {
   getFreeBytes,
   legacyModelPath,
   modelFilePath,
+  modelsDir,
   moveFile,
+  partialMetaPath,
+  partialModelPath,
+  partialRestPath,
   readFileSize,
   readManifest,
   removeFileIfExists,
@@ -22,6 +27,7 @@ import type {
   CatalogModel,
   DownloadProgress,
   InstalledModel,
+  InterruptedDownload,
   Manifest,
   ModelSource,
 } from './types';
@@ -33,6 +39,7 @@ export type ModelManagerState = {
   selectedId: string | null;
   selectedModel: InstalledModel | null;
   downloads: Record<string, DownloadProgress>;
+  interrupted: InterruptedDownload[];
   importing: boolean;
 };
 
@@ -43,7 +50,10 @@ class ModelManager {
   private hydratePromise: Promise<void> | null = null;
   private manifest: Manifest = { selectedId: null, installed: {} };
   private downloads: Record<string, DownloadProgress> = {};
+  private interrupted: InterruptedDownload[] = [];
   private downloadJobs = new Map<string, number>();
+  private downloadPolls = new Map<string, ReturnType<typeof setInterval>>();
+  private cancelled = new Set<string>();
   private importing = false;
   private listeners = new Set<Listener>();
 
@@ -64,6 +74,7 @@ class ModelManager {
       selectedId: this.manifest.selectedId,
       selectedModel: this.getSelectedModel(),
       downloads: this.downloads,
+      interrupted: this.interrupted.filter(item => !this.downloads[item.id]),
       importing: this.importing,
     };
   }
@@ -222,6 +233,7 @@ class ModelManager {
   }
 
   cancelDownload(id: string) {
+    this.cancelled.add(id);
     const jobId = this.downloadJobs.get(id);
 
     if (jobId != null) {
@@ -230,6 +242,38 @@ class ModelManager {
 
     this.downloadJobs.delete(id);
     delete this.downloads[id];
+    this.stopPoll(id);
+    this.removePartial(id)
+      .finally(() => {
+        this.interrupted = this.interrupted.filter(item => item.id !== id);
+        this.emit();
+      })
+      .catch(() => undefined);
+    this.emit();
+  }
+
+  async resume(id: string) {
+    await this.hydrate();
+    const item = this.interrupted.find(entry => entry.id === id);
+
+    if (!item) {
+      throw new Error('That download is no longer on this device');
+    }
+
+    await this.download({
+      id: item.id,
+      name: item.name,
+      url: item.url,
+      source: item.source,
+      origin: item.origin,
+      expectedBytes: item.expectedBytes || undefined,
+    });
+  }
+
+  async discardPartial(id: string) {
+    this.cancelDownload(id);
+    await this.removePartial(id);
+    this.interrupted = this.interrupted.filter(item => item.id !== id);
     this.emit();
   }
 
@@ -238,6 +282,7 @@ class ModelManager {
     this.manifest = await readManifest();
     await this.reconcileFiles();
     await this.migrateLegacyModel();
+    await this.discoverInterrupted();
     this.ready = true;
     this.emit();
   }
@@ -256,7 +301,8 @@ class ModelManager {
       this.manifest.selectedId &&
       !this.manifest.installed[this.manifest.selectedId]
     ) {
-      this.manifest.selectedId = Object.keys(this.manifest.installed)[0] ?? null;
+      this.manifest.selectedId =
+        Object.keys(this.manifest.installed)[0] ?? null;
       changed = true;
     }
 
@@ -320,56 +366,135 @@ class ModelManager {
       return;
     }
 
-    if (options.expectedBytes) {
-      await this.assertDiskSpace(options.expectedBytes);
+    const dest = modelFilePath(options.id);
+    const part = partialModelPath(options.id);
+    const rest = partialRestPath(options.id);
+    let offset = 0;
+
+    if (await fileExists(part)) {
+      offset = await readFileSize(part);
     }
 
-    const dest = modelFilePath(options.id);
-    const part = `${dest}.part`;
-    await removeFileIfExists(part);
+    const remaining =
+      options.expectedBytes && offset > 0
+        ? Math.max(0, options.expectedBytes - offset)
+        : options.expectedBytes;
+
+    if (remaining) {
+      await this.assertDiskSpace(remaining);
+    }
+
+    if (offset === 0) {
+      await removeFileIfExists(part);
+    }
+
+    await removeFileIfExists(rest);
+    await RNFS.writeFile(
+      partialMetaPath(options.id),
+      JSON.stringify({
+        id: options.id,
+        name: options.name,
+        url: options.url,
+        source: options.source,
+        origin: options.origin,
+        expectedBytes: options.expectedBytes ?? 0,
+      }),
+      'utf8',
+    );
+    this.interrupted = this.interrupted.filter(item => item.id !== options.id);
+    this.cancelled.delete(options.id);
 
     this.downloads[options.id] = {
-      bytesWritten: 0,
+      bytesWritten: offset,
       contentLength: options.expectedBytes ?? 0,
     };
     this.emit();
 
+    const headers: Record<string, string> = {
+      Accept: '*/*',
+      'User-Agent': 'freeGPT/1.0',
+    };
+    let expectedTotal = options.expectedBytes ?? 0;
+
+    if (offset > 0) {
+      headers.Range = `bytes=${offset}-`;
+      this.pollPartial(options.id, offset, rest, expectedTotal);
+    }
+
     const { promise, jobId } = RNFS.downloadFile({
       fromUrl: options.url,
-      toFile: part,
+      toFile: offset > 0 ? rest : part,
       background: true,
       progressDivider: 4,
-      headers: {
-        Accept: '*/*',
-        'User-Agent': 'freeGPT/1.0',
-      },
+      headers,
       begin: res => {
+        const incoming = res.contentLength || 0;
+
+        if (!expectedTotal && incoming > 0) {
+          expectedTotal = offset > 0 ? offset + incoming : incoming;
+        }
+
         this.downloads[options.id] = {
-          bytesWritten: 0,
-          contentLength: res.contentLength || options.expectedBytes || 0,
+          bytesWritten: offset,
+          contentLength: expectedTotal || incoming,
         };
         this.emit();
       },
       progress: res => {
         this.downloads[options.id] = {
-          bytesWritten: res.bytesWritten,
-          contentLength: res.contentLength,
+          bytesWritten: offset + res.bytesWritten,
+          contentLength:
+            options.expectedBytes ||
+            (offset > 0 ? offset + res.contentLength : res.contentLength),
         };
         this.emit();
       },
     });
 
     this.downloadJobs.set(options.id, jobId);
+    let moved = false;
 
     try {
       const result = await promise;
+      const status = result.statusCode ?? 0;
 
-      if (result.statusCode != null && result.statusCode >= 400) {
-        throw new Error(`Download failed (${result.statusCode})`);
+      if (this.cancelled.has(options.id)) {
+        return;
       }
 
-      await assertGgufFile(part);
+      if (status === 416 && offset > 0) {
+        // The partial file already covers the remote resource.
+      } else if (status >= 400) {
+        throw new Error(`Download failed (${status})`);
+      } else if (offset > 0 && status === 206) {
+        await appendFile(rest, part);
+        await removeFileIfExists(rest);
+      } else if (offset > 0 && status === 200) {
+        await moveFile(rest, part);
+      } else if (offset > 0) {
+        throw new Error(`Download failed (${status})`);
+      }
+
+      const finalSize = await readFileSize(part);
+
+      if (expectedTotal > 0 && finalSize + 4096 < expectedTotal) {
+        throw new Error('Download stopped before the file finished');
+      }
+
+      try {
+        await assertGgufFile(part);
+      } catch (error) {
+        await this.removePartial(options.id);
+        throw new Error(
+          error instanceof Error
+            ? `${error.message} Start the download again.`
+            : 'That download was not a valid GGUF model. Start it again.',
+        );
+      }
+
       await moveFile(part, dest);
+      moved = true;
+      await removeFileIfExists(partialMetaPath(options.id));
       await this.register({
         id: options.id,
         name: options.name,
@@ -379,20 +504,164 @@ class ModelManager {
         origin: options.origin,
         downloadedAt: Date.now(),
       });
+      this.interrupted = this.interrupted.filter(
+        item => item.id !== options.id,
+      );
     } catch (error) {
-      await removeFileIfExists(part);
-      await removeFileIfExists(dest);
+      if (moved) {
+        await removeFileIfExists(dest);
+      }
 
-      if (this.isCancelError(error)) {
+      await removeFileIfExists(rest);
+
+      if (this.cancelled.has(options.id) || this.isCancelError(error)) {
+        await this.removePartial(options.id);
         return;
       }
 
-      throw error;
+      if (await fileExists(part)) {
+        const bytesWritten = await readFileSize(part);
+        this.rememberInterrupted(options, bytesWritten);
+      }
+
+      const reason = error instanceof Error ? error.message : 'Download failed';
+      const resumable = await fileExists(part);
+      throw new Error(
+        resumable ? `${reason} You can resume it from Models.` : reason,
+      );
     } finally {
+      this.cancelled.delete(options.id);
       this.downloadJobs.delete(options.id);
       delete this.downloads[options.id];
+      this.stopPoll(options.id);
       this.emit();
     }
+  }
+
+  private async discoverInterrupted() {
+    try {
+      if (typeof RNFS.readDir !== 'function') {
+        return;
+      }
+
+      const entries = await RNFS.readDir(modelsDir());
+      const found: InterruptedDownload[] = [];
+
+      for (const entry of entries) {
+        if (!entry.name.endsWith('.gguf.part.json')) {
+          continue;
+        }
+
+        try {
+          const raw = await RNFS.readFile(entry.path, 'utf8');
+          const parsed = JSON.parse(raw) as {
+            id?: string;
+            name?: string;
+            url?: string;
+            source?: ModelSource;
+            origin?: string;
+            expectedBytes?: number;
+          };
+
+          if (!parsed.id || !parsed.url || !parsed.name) {
+            continue;
+          }
+
+          if (this.manifest.installed[parsed.id]) {
+            await this.removePartial(parsed.id);
+            continue;
+          }
+
+          const part = partialModelPath(parsed.id);
+
+          if (!(await fileExists(part))) {
+            await removeFileIfExists(entry.path);
+            continue;
+          }
+
+          found.push({
+            id: parsed.id,
+            name: parsed.name,
+            url: parsed.url,
+            source: parsed.source ?? 'url',
+            origin: parsed.origin ?? parsed.url,
+            expectedBytes: parsed.expectedBytes ?? 0,
+            bytesWritten: await readFileSize(part),
+          });
+        } catch {
+          // Skip a metadata file that cannot be read.
+        }
+      }
+
+      this.interrupted = found;
+    } catch {
+      this.interrupted = [];
+    }
+  }
+
+  private rememberInterrupted(
+    options: {
+      id: string;
+      name: string;
+      url: string;
+      source: ModelSource;
+      origin: string;
+      expectedBytes?: number;
+    },
+    bytesWritten: number,
+  ) {
+    this.interrupted = [
+      ...this.interrupted.filter(item => item.id !== options.id),
+      {
+        id: options.id,
+        name: options.name,
+        url: options.url,
+        source: options.source,
+        origin: options.origin,
+        expectedBytes: options.expectedBytes ?? 0,
+        bytesWritten,
+      },
+    ];
+  }
+
+  private pollPartial(
+    id: string,
+    offset: number,
+    rest: string,
+    expectedBytes: number,
+  ) {
+    this.stopPoll(id);
+    const timer = setInterval(() => {
+      readFileSize(rest)
+        .then(extra => {
+          if (!this.downloads[id]) {
+            return;
+          }
+
+          this.downloads[id] = {
+            bytesWritten: offset + extra,
+            contentLength: expectedBytes || this.downloads[id].contentLength,
+          };
+          this.emit();
+        })
+        .catch(() => undefined);
+    }, 500);
+    this.downloadPolls.set(id, timer);
+  }
+
+  private stopPoll(id: string) {
+    const timer = this.downloadPolls.get(id);
+
+    if (timer) {
+      clearInterval(timer);
+      this.downloadPolls.delete(id);
+    }
+  }
+
+  private async removePartial(id: string) {
+    await removeFileIfExists(partialModelPath(id));
+    await removeFileIfExists(partialMetaPath(id));
+    await removeFileIfExists(partialRestPath(id));
   }
 
   private async register(model: InstalledModel) {
@@ -410,7 +679,8 @@ class ModelManager {
     delete this.manifest.installed[id];
 
     if (this.manifest.selectedId === id) {
-      this.manifest.selectedId = Object.keys(this.manifest.installed)[0] ?? null;
+      this.manifest.selectedId =
+        Object.keys(this.manifest.installed)[0] ?? null;
     }
 
     await writeManifest(this.manifest);

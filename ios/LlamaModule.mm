@@ -1,5 +1,7 @@
 #import "LlamaModule.h"
 
+#import <UIKit/UIKit.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -321,10 +323,13 @@ RCT_EXPORT_METHOD(
   });
 }
 
-RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (
-    NSNumber *)maxTokens temperature : (NSNumber *)
-                      temperature resolver : (RCTPromiseResolveBlock)
-                          resolve rejecter : (RCTPromiseRejectBlock)reject) {
+RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
+                      maxTokens temperature : (NSNumber *)
+                          temperature topP : (NSNumber *)
+                              topP repeatPenalty : (NSNumber *)
+                                  repeatPenalty resolver : (RCTPromiseResolveBlock)
+                                      resolve rejecter : (RCTPromiseRejectBlock)
+                                          reject) {
   dispatch_async(llamaQueue, ^{
     if (self->model == nullptr || self->context == nullptr) {
       reject(@"MODEL_NOT_LOADED", @"Model must be loaded before generation",
@@ -349,6 +354,12 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (
     const llama_vocab *vocab = llama_model_get_vocab(self->model);
     const int32_t maxNewTokens = maxTokens != nil ? maxTokens.intValue : 256;
     const float temp = temperature != nil ? temperature.floatValue : 0.8f;
+    const float top = topP != nil ? std::min(1.f, std::max(0.f, topP.floatValue))
+                                  : 0.9f;
+    const float penalty =
+        repeatPenalty != nil
+            ? std::min(2.f, std::max(1.f, repeatPenalty.floatValue))
+            : 1.1f;
     const std::string formattedPrompt =
         llama_formatted_chat_prompt(self->model, turns);
     const int32_t promptLength = (int32_t)formattedPrompt.size();
@@ -423,7 +434,19 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (
     llama_sampler_chain_params samplerParams =
         llama_sampler_chain_default_params();
     self->sampler = llama_sampler_chain_init(samplerParams);
+
+    if (penalty > 1.001f) {
+      const int32_t nVocab = llama_vocab_n_tokens(vocab);
+      llama_sampler_chain_add(
+          self->sampler, llama_sampler_init_penalties(nVocab, 64, penalty, 0.0f,
+                                                      0.0f));
+    }
+
     llama_sampler_chain_add(self->sampler, llama_sampler_init_min_p(0.05f, 1));
+
+    if (top > 0.0f && top < 1.0f) {
+      llama_sampler_chain_add(self->sampler, llama_sampler_init_top_p(top, 1));
+    }
 
     if (temp <= 0.0f) {
       llama_sampler_chain_add(self->sampler, llama_sampler_init_greedy());
@@ -502,6 +525,54 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (
                                  length:generated.size()
                                encoding:NSUTF8StringEncoding];
     resolve(resultText ?: @"");
+  });
+}
+
+RCT_EXPORT_METHOD(impact) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc]
+        initWithStyle:UIImpactFeedbackStyleLight];
+    [generator prepare];
+    [generator impactOccurred];
+  });
+}
+
+RCT_EXPORT_METHOD(appendFile : (NSString *)source onto : (NSString *)
+                      dest resolver : (RCTPromiseResolveBlock)
+                          resolve rejecter : (RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    NSFileHandle *input = [NSFileHandle fileHandleForReadingAtPath:source];
+    NSFileHandle *output = [NSFileHandle fileHandleForWritingAtPath:dest];
+
+    if (input == nil || output == nil) {
+      reject(@"APPEND_FAILED", @"Could not resume the download file", nil);
+      return;
+    }
+
+    @try {
+      [output seekToEndOfFile];
+
+      while (true) {
+        @autoreleasepool {
+          NSData *chunk = [input readDataOfLength:1024 * 1024];
+
+          if (chunk.length == 0) {
+            break;
+          }
+
+          [output writeData:chunk];
+        }
+      }
+
+      [output synchronizeFile];
+      resolve(@YES);
+    } @catch (NSException *exception) {
+      reject(@"APPEND_FAILED",
+             exception.reason ?: @"Could not append the download", nil);
+    } @finally {
+      [input closeFile];
+      [output closeFile];
+    }
   });
 }
 

@@ -7,10 +7,12 @@ export function useSettings() {
   const [settings, setSettings] = useState<AppSettings>(() =>
     settingsStore.getState(),
   );
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = settingsStore.subscribe(() => {
       setSettings(settingsStore.getState());
+      setSaveError(settingsStore.getSaveError());
     });
 
     settingsStore.hydrate().catch(() => {
@@ -22,8 +24,12 @@ export function useSettings() {
 
   return {
     ...settings,
+    saveError,
     setTemperature: settingsStore.setTemperature,
     setMaxTokens: settingsStore.setMaxTokens,
+    setContextSize: settingsStore.setContextSize,
+    setTopP: settingsStore.setTopP,
+    setRepeatPenalty: settingsStore.setRepeatPenalty,
     setSystemPrompt: settingsStore.setSystemPrompt,
   };
 }

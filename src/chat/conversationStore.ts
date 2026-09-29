@@ -1,5 +1,6 @@
 import RNFS from 'react-native-fs';
 
+import { createId } from './ids';
 import { titleFromMessages } from './prompt';
 import type { ChatMessage, Conversation } from './types';
 
@@ -14,20 +15,18 @@ export type ConversationState = {
   ready: boolean;
   activeId: string | null;
   conversations: Conversation[];
+  saveError: string | null;
 };
 
 const storePath = () => `${RNFS.DocumentDirectoryPath}/conversations.json`;
-
-function createId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function emptyState(): PersistedConversations {
   return { activeId: null, conversations: [] };
 }
 
-class ConversationStore {
+export class ConversationStore {
   private ready = false;
+  private saveError: string | null = null;
   private hydratePromise: Promise<void> | null = null;
   private activeId: string | null = null;
   private conversations: Conversation[] = [];
@@ -50,6 +49,7 @@ class ConversationStore {
       conversations: [...this.conversations].sort(
         (a, b) => b.updatedAt - a.updatedAt,
       ),
+      saveError: this.saveError,
     };
   }
 
@@ -94,6 +94,7 @@ class ConversationStore {
       messages: [],
       createdAt: now,
       updatedAt: now,
+      titleCustom: false,
     };
 
     this.conversations.push(chat);
@@ -132,9 +133,59 @@ class ConversationStore {
     }
 
     chat.messages = messages;
-    chat.title = titleFromMessages(messages);
+
+    if (!chat.titleCustom) {
+      chat.title = titleFromMessages(messages);
+    }
+
     chat.updatedAt = Date.now();
     this.commit(false);
+  }
+
+  rename(id: string, title: string) {
+    const chat = this.conversations.find(item => item.id === id);
+
+    if (!chat) {
+      return;
+    }
+
+    const trimmed = title.trim().replace(/\s+/g, ' ');
+
+    if (!trimmed) {
+      chat.titleCustom = false;
+      chat.title = titleFromMessages(chat.messages);
+    } else {
+      chat.titleCustom = true;
+      chat.title = trimmed.slice(0, 80);
+    }
+
+    chat.updatedAt = Date.now();
+    this.commit(true);
+  }
+
+  setModel(id: string, modelId: string) {
+    const chat = this.conversations.find(item => item.id === id);
+
+    if (!chat || !modelId) {
+      return;
+    }
+
+    chat.modelId = modelId;
+    chat.updatedAt = Date.now();
+    this.commit(true);
+  }
+
+  setInstruction(id: string, systemPrompt: string) {
+    const chat = this.conversations.find(item => item.id === id);
+
+    if (!chat) {
+      return;
+    }
+
+    const trimmed = systemPrompt.slice(0, 2000).trim();
+    chat.systemPrompt = trimmed || undefined;
+    chat.updatedAt = Date.now();
+    this.commit(true);
   }
 
   async flush() {
@@ -188,8 +239,15 @@ class ConversationStore {
 
     try {
       await RNFS.writeFile(storePath(), JSON.stringify(payload), 'utf8');
+
+      if (this.saveError) {
+        this.saveError = null;
+        this.emit();
+      }
     } catch {
       this.dirty = true;
+      this.saveError = 'Could not save this chat on the device.';
+      this.emit();
     }
   }
 
@@ -199,7 +257,9 @@ class ConversationStore {
         const raw = await RNFS.readFile(storePath(), 'utf8');
         const parsed = JSON.parse(raw) as PersistedConversations;
         const conversations = Array.isArray(parsed?.conversations)
-          ? parsed.conversations.filter(isConversation).map(normalizeConversation)
+          ? parsed.conversations
+              .filter(isConversation)
+              .map(normalizeConversation)
           : [];
         const withMessages = conversations.filter(chat =>
           chat.messages.some(
@@ -242,9 +302,17 @@ function isConversation(value: unknown): value is Conversation {
 function normalizeConversation(chat: Conversation): Conversation {
   const now = Date.now();
 
+  const systemPrompt =
+    typeof chat.systemPrompt === 'string'
+      ? chat.systemPrompt.slice(0, 2000).trim()
+      : '';
+
   return {
     id: chat.id,
-    title: typeof chat.title === 'string' ? chat.title : 'New chat',
+    title:
+      typeof chat.title === 'string' && chat.title.trim()
+        ? chat.title
+        : 'New chat',
     messages: chat.messages.filter(
       message =>
         !!message &&
@@ -254,6 +322,11 @@ function normalizeConversation(chat: Conversation): Conversation {
     ),
     createdAt: typeof chat.createdAt === 'number' ? chat.createdAt : now,
     updatedAt: typeof chat.updatedAt === 'number' ? chat.updatedAt : now,
+    ...(typeof chat.modelId === 'string' && chat.modelId
+      ? { modelId: chat.modelId }
+      : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
+    titleCustom: chat.titleCustom === true,
   };
 }
 

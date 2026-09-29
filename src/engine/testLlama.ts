@@ -33,7 +33,13 @@ export async function testLlama() {
   });
 
   try {
-    const result = await Llama.generate('Hello! Who are you?', 100, 0.7);
+    const result = await Llama.generate(
+      'Hello! Who are you?',
+      100,
+      0.7,
+      0.9,
+      1.1,
+    );
     console.log('Result:', result);
     return result;
   } finally {

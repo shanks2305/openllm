@@ -6,6 +6,9 @@ export type ChatTurn = {
 export type GenerateOptions = {
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  repeatPenalty?: number;
+  contextSize?: number;
 };
 
 export type LoadModelOptions = {

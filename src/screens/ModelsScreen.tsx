@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,7 +25,7 @@ import { IconButton } from '../components/ui/IconButton';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { useModels } from '../hooks/useModels';
 import { getCatalogModel } from '../model/catalog';
-import { formatBytes } from '../model/modelStorage';
+import { formatBytes, getFreeBytes, storageNote } from '../model/modelStorage';
 import type { InstalledModel, ModelSource } from '../model/types';
 
 type AddStep = 'chooser' | 'catalog' | 'url' | 'import';
@@ -59,11 +59,13 @@ const ModelsScreen = () => {
   const insets = useSafeAreaInsets();
   const [addStep, setAddStep] = useState<AddStep | null>(null);
   const [url, setUrl] = useState('');
+  const [freeBytes, setFreeBytes] = useState<number | null>(null);
   const {
     catalog,
     installed,
     selectedId,
     downloads,
+    interrupted,
     importing,
     busy,
     error,
@@ -73,7 +75,15 @@ const ModelsScreen = () => {
     select,
     remove,
     cancelDownload,
+    resumeDownload,
+    discardDownload,
   } = useModels();
+
+  useEffect(() => {
+    getFreeBytes()
+      .then(setFreeBytes)
+      .catch(() => setFreeBytes(null));
+  }, [addStep, interrupted.length, installed.length]);
 
   const closeAdd = () => {
     setAddStep(null);
@@ -147,6 +157,42 @@ const ModelsScreen = () => {
   };
 
   const startCatalogDownload = (id: string) => {
+    const model = getCatalogModel(id);
+
+    if (!model) {
+      return;
+    }
+
+    const note = storageNote(model.sizeBytes);
+    const freeLabel =
+      freeBytes == null
+        ? ''
+        : ` ${formatBytes(freeBytes)} free on this device.`;
+    const tight =
+      freeBytes != null && freeBytes < model.sizeBytes * 1.1
+        ? ' This device may not have enough free space.'
+        : '';
+
+    if (model.sizeBytes >= 1_000_000_000) {
+      Alert.alert(
+        'Download this model?',
+        `${model.name} is ${formatBytes(model.sizeBytes)}.${freeLabel}${
+          note ? ` ${note}` : ''
+        }${tight}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Download',
+            onPress: () => {
+              void downloadCatalog(id);
+              closeAdd();
+            },
+          },
+        ],
+      );
+      return;
+    }
+
     void downloadCatalog(id);
     closeAdd();
   };
@@ -183,11 +229,14 @@ const ModelsScreen = () => {
         contentContainerStyle={[
           styles.content,
           { paddingBottom: insets.bottom + 88 },
-        ]}>
+        ]}
+      >
         <Text style={styles.section}>Downloaded</Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
 
-        {installed.length === 0 && pendingDownloads.length === 0 ? (
+        {installed.length === 0 &&
+        pendingDownloads.length === 0 &&
+        interrupted.length === 0 ? (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyTitle}>No models yet</Text>
             <Text style={styles.hint}>
@@ -196,6 +245,36 @@ const ModelsScreen = () => {
             </Text>
           </View>
         ) : null}
+
+        {interrupted.map(item => (
+          <View key={`partial-${item.id}`} style={styles.card}>
+            <Text style={styles.cardTitle}>{item.name}</Text>
+            <Text style={styles.progress}>
+              Download interrupted · {formatBytes(item.bytesWritten)}
+              {item.expectedBytes
+                ? ` of ${formatBytes(item.expectedBytes)}`
+                : ''}
+            </Text>
+            <View style={styles.actions}>
+              <Pressable
+                onPress={() => {
+                  void resumeDownload(item.id);
+                }}
+                style={styles.actionButton}
+              >
+                <Text style={styles.actionLabel}>Resume</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  void discardDownload(item.id);
+                }}
+                style={styles.actionButton}
+              >
+                <Text style={styles.dangerLabel}>Discard</Text>
+              </Pressable>
+            </View>
+          </View>
+        ))}
 
         {pendingDownloads.map(([id, download]) => (
           <View key={id} style={styles.card}>
@@ -208,7 +287,8 @@ const ModelsScreen = () => {
             </Text>
             <Pressable
               onPress={() => cancelDownload(id)}
-              style={styles.actionButton}>
+              style={styles.actionButton}
+            >
               <Text style={styles.dangerLabel}>Cancel</Text>
             </Pressable>
           </View>
@@ -238,7 +318,8 @@ const ModelsScreen = () => {
                   </Text>
                   <Pressable
                     onPress={() => cancelDownload(model.id)}
-                    style={styles.actionButton}>
+                    style={styles.actionButton}
+                  >
                     <Text style={styles.dangerLabel}>Cancel</Text>
                   </Pressable>
                 </>
@@ -249,13 +330,15 @@ const ModelsScreen = () => {
                       onPress={() => {
                         void select(model.id);
                       }}
-                      style={styles.actionButton}>
+                      style={styles.actionButton}
+                    >
                       <Text style={styles.actionLabel}>Select</Text>
                     </Pressable>
                   )}
                   <Pressable
                     onPress={() => confirmRemove(model)}
-                    style={styles.actionButton}>
+                    style={styles.actionButton}
+                  >
                     <Text style={styles.dangerLabel}>Delete</Text>
                   </Pressable>
                 </View>
@@ -266,7 +349,8 @@ const ModelsScreen = () => {
       </ScrollView>
 
       <View
-        style={[styles.footer, { paddingBottom: insets.bottom + spacing.sm }]}>
+        style={[styles.footer, { paddingBottom: insets.bottom + spacing.sm }]}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Add a model"
@@ -274,7 +358,8 @@ const ModelsScreen = () => {
           style={({ pressed }) => [
             styles.addButton,
             { opacity: pressed ? 0.8 : 1 },
-          ]}>
+          ]}
+        >
           <Text style={styles.addButtonLabel}>Add model</Text>
         </Pressable>
       </View>
@@ -283,156 +368,182 @@ const ModelsScreen = () => {
         visible={addStep !== null}
         animationType="slide"
         transparent
-        onRequestClose={closeAdd}>
+        onRequestClose={closeAdd}
+      >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <Pressable style={styles.modalDismiss} onPress={closeAdd} />
           <View
             style={[
               styles.sheet,
               { paddingBottom: insets.bottom + spacing.md },
-            ]}>
+            ]}
+          >
             <View style={styles.sheetHandle} />
             <ScrollView
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.sheetContent}>
+              contentContainerStyle={styles.sheetContent}
+            >
               {addStep === 'chooser' ? (
-              <>
-                <Text style={styles.sheetTitle}>Add a model</Text>
-                <Text style={styles.hint}>
-                  Choose how you want to add a GGUF model. It will show up in
-                  Downloaded on this page.
-                </Text>
-                <AddMethodButton
-                  title="Recommended"
-                  subtitle="Download a model we suggest for this app"
-                  onPress={() => setAddStep('catalog')}
-                />
-                <AddMethodButton
-                  title="Download from URL"
-                  subtitle="Paste a direct HTTPS link to a .gguf file"
-                  onPress={() => setAddStep('url')}
-                />
-                <AddMethodButton
-                  title="Import file"
-                  subtitle="Pick a .gguf already saved on this device"
-                  onPress={() => setAddStep('import')}
-                />
-              </>
-            ) : null}
+                <>
+                  <Text style={styles.sheetTitle}>Add a model</Text>
+                  <Text style={styles.hint}>
+                    Choose how you want to add a GGUF model. It will show up in
+                    Downloaded on this page.
+                  </Text>
+                  <AddMethodButton
+                    title="Recommended"
+                    subtitle="Download a model we suggest for this app"
+                    onPress={() => setAddStep('catalog')}
+                  />
+                  <AddMethodButton
+                    title="Download from URL"
+                    subtitle="Paste a direct HTTPS link to a .gguf file"
+                    onPress={() => setAddStep('url')}
+                  />
+                  <AddMethodButton
+                    title="Import file"
+                    subtitle="Pick a .gguf already saved on this device"
+                    onPress={() => setAddStep('import')}
+                  />
+                </>
+              ) : null}
 
-            {addStep === 'catalog' ? (
-              <>
-                <SheetBack
-                  title="Recommended"
-                  onBack={() => setAddStep('chooser')}
-                />
-                <Text style={styles.hint}>
-                  These are smaller instruction models that run on-device. Tap
-                  Download and return here — progress and the finished file
-                  appear in Downloaded.
-                </Text>
-                {catalog.map(model => {
-                  const installedModel = installed.find(
-                    item => item.id === model.id,
-                  );
-                  const download = downloads[model.id];
+              {addStep === 'catalog' ? (
+                <>
+                  <SheetBack
+                    title="Recommended"
+                    onBack={() => setAddStep('chooser')}
+                  />
+                  <Text style={styles.hint}>
+                    These are smaller instruction models that run on-device. Tap
+                    Download and return here — progress and the finished file
+                    appear in Downloaded.
+                    {freeBytes == null
+                      ? ''
+                      : ` ${formatBytes(freeBytes)} free on this device.`}
+                  </Text>
+                  {catalog.map(model => {
+                    const installedModel = installed.find(
+                      item => item.id === model.id,
+                    );
+                    const download = downloads[model.id];
 
-                  return (
-                    <View key={model.id} style={styles.card}>
-                      <Text style={styles.cardTitle}>{model.name}</Text>
-                      <Text style={styles.meta}>
-                        {model.quant} · {formatBytes(model.sizeBytes)}
-                      </Text>
-                      <Text style={styles.hint}>{model.description}</Text>
-                      {download ? (
-                        <Text style={styles.progress}>
-                          {progressLabel(
-                            download.bytesWritten,
-                            download.contentLength,
-                          )}
+                    return (
+                      <View key={model.id} style={styles.card}>
+                        <Text style={styles.cardTitle}>{model.name}</Text>
+                        <Text style={styles.meta}>
+                          {model.quant} · {formatBytes(model.sizeBytes)}
                         </Text>
-                      ) : installedModel ? (
-                        <Text style={styles.badge}>Already downloaded</Text>
-                      ) : (
-                        <Pressable
-                          onPress={() => startCatalogDownload(model.id)}
-                          style={styles.primaryButton}>
-                          <Text style={styles.primaryLabel}>Download</Text>
-                        </Pressable>
-                      )}
-                    </View>
-                  );
-                })}
-              </>
-            ) : null}
+                        <Text style={styles.hint}>{model.description}</Text>
+                        {storageNote(model.sizeBytes) ? (
+                          <Text style={styles.hint}>
+                            {storageNote(model.sizeBytes)}
+                          </Text>
+                        ) : null}
+                        {download ? (
+                          <Text style={styles.progress}>
+                            {progressLabel(
+                              download.bytesWritten,
+                              download.contentLength,
+                            )}
+                          </Text>
+                        ) : installedModel ? (
+                          <Text style={styles.badge}>Already downloaded</Text>
+                        ) : interrupted.some(item => item.id === model.id) ? (
+                          <Pressable
+                            onPress={() => {
+                              void resumeDownload(model.id);
+                              closeAdd();
+                            }}
+                            style={styles.primaryButton}
+                          >
+                            <Text style={styles.primaryLabel}>Resume</Text>
+                          </Pressable>
+                        ) : (
+                          <Pressable
+                            onPress={() => startCatalogDownload(model.id)}
+                            style={styles.primaryButton}
+                          >
+                            <Text style={styles.primaryLabel}>Download</Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    );
+                  })}
+                </>
+              ) : null}
 
-            {addStep === 'url' ? (
-              <>
-                <SheetBack
-                  title="Download from URL"
-                  onBack={() => setAddStep('chooser')}
-                />
-                <Text style={styles.hint}>
-                  Use a direct HTTPS link that ends in .gguf, for example a
-                  Hugging Face resolve URL. HTTP links are not supported. After
-                  you start the download, watch progress in Downloaded.
-                </Text>
-                <TextInput
-                  value={url}
-                  onChangeText={setUrl}
-                  placeholder="https://example.com/model.gguf"
-                  placeholderTextColor={colors.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  style={styles.input}
-                />
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={startUrlDownload}
-                  disabled={busy || url.trim().length === 0}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    (busy || url.trim().length === 0) && styles.buttonDisabled,
-                    { opacity: pressed ? 0.8 : 1 },
-                  ]}>
-                  <Text style={styles.primaryLabel}>Download</Text>
-                </Pressable>
-              </>
-            ) : null}
+              {addStep === 'url' ? (
+                <>
+                  <SheetBack
+                    title="Download from URL"
+                    onBack={() => setAddStep('chooser')}
+                  />
+                  <Text style={styles.hint}>
+                    Use a direct HTTPS link that ends in .gguf, for example a
+                    Hugging Face resolve URL. HTTP links are not supported.
+                    After you start the download, watch progress in Downloaded.
+                  </Text>
+                  <TextInput
+                    value={url}
+                    onChangeText={setUrl}
+                    placeholder="https://example.com/model.gguf"
+                    placeholderTextColor={colors.textMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="url"
+                    style={styles.input}
+                  />
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={startUrlDownload}
+                    disabled={busy || url.trim().length === 0}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      (busy || url.trim().length === 0) &&
+                        styles.buttonDisabled,
+                      { opacity: pressed ? 0.8 : 1 },
+                    ]}
+                  >
+                    <Text style={styles.primaryLabel}>Download</Text>
+                  </Pressable>
+                </>
+              ) : null}
 
-            {addStep === 'import' ? (
-              <>
-                <SheetBack
-                  title="Import file"
-                  onBack={() => setAddStep('chooser')}
-                />
-                <Text style={styles.hint}>
-                  Choose a .gguf file from Files or another app. It is copied
-                  into llmOS so chat can load it even if the original is moved.
-                  Only GGUF weights work.
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    void importModel();
-                  }}
-                  disabled={importing}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    { opacity: pressed || importing ? 0.75 : 1 },
-                  ]}>
-                  {importing ? (
-                    <ActivityIndicator color={colors.text} />
-                  ) : (
-                    <Text style={styles.primaryLabel}>Choose .gguf file</Text>
-                  )}
-                </Pressable>
-              </>
-            ) : null}
+              {addStep === 'import' ? (
+                <>
+                  <SheetBack
+                    title="Import file"
+                    onBack={() => setAddStep('chooser')}
+                  />
+                  <Text style={styles.hint}>
+                    Choose a .gguf file from Files or another app. It is copied
+                    into llmOS so chat can load it even if the original is
+                    moved. Only GGUF weights work.
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      void importModel();
+                    }}
+                    disabled={importing}
+                    style={({ pressed }) => [
+                      styles.primaryButton,
+                      { opacity: pressed || importing ? 0.75 : 1 },
+                    ]}
+                  >
+                    {importing ? (
+                      <ActivityIndicator color={colors.text} />
+                    ) : (
+                      <Text style={styles.primaryLabel}>Choose .gguf file</Text>
+                    )}
+                  </Pressable>
+                </>
+              ) : null}
             </ScrollView>
           </View>
         </KeyboardAvoidingView>
@@ -454,7 +565,11 @@ function AddMethodButton({
     <Pressable
       accessibilityRole="button"
       onPress={onPress}
-      style={({ pressed }) => [styles.methodRow, { opacity: pressed ? 0.75 : 1 }]}>
+      style={({ pressed }) => [
+        styles.methodRow,
+        { opacity: pressed ? 0.75 : 1 },
+      ]}
+    >
       <View style={styles.rowText}>
         <Text style={styles.cardTitle}>{title}</Text>
         <Text style={styles.hint}>{subtitle}</Text>

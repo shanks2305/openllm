@@ -24,6 +24,8 @@ type LlamaNativeModule = {
     prompt: string,
     maxTokens: number,
     temperature: number,
+    topP: number,
+    repeatPenalty: number,
   ) => Promise<string>;
   stop: () => Promise<void>;
 };
@@ -87,7 +89,7 @@ export class NativeLlamaEngine implements LlamaEngine {
       throw new Error('Llama native module is unavailable');
     }
 
-    await this.loadModel();
+    await this.loadModel({ contextSize: options?.contextSize });
 
     const payload = JSON.stringify(
       messages
@@ -115,6 +117,8 @@ export class NativeLlamaEngine implements LlamaEngine {
         payload,
         options?.maxTokens ?? 256,
         options?.temperature ?? 0.7,
+        options?.topP ?? 0.9,
+        options?.repeatPenalty ?? 1.1,
       );
 
       if (

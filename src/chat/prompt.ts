@@ -1,7 +1,21 @@
 import type { ChatTurn } from '../engine/LlamaEngine';
 import type { ChatMessage } from './types';
 
-const DEFAULT_CONTEXT_CHARS = 12000;
+const CHARS_PER_TOKEN = 4;
+export const DEFAULT_CONTEXT_TOKENS = 3000;
+
+export function estimateTokens(text: string) {
+  if (!text) {
+    return 0;
+  }
+
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+export function promptTokenBudget(contextSize: number, reservedTokens: number) {
+  const budget = Math.floor(contextSize - reservedTokens);
+  return Math.max(128, budget);
+}
 
 export function titleFromMessages(messages: ChatMessage[]) {
   const firstUser = messages.find(
@@ -24,6 +38,7 @@ export function titleFromMessages(messages: ChatMessage[]) {
 export function messagesToTurns(
   messages: ChatMessage[],
   systemPrompt: string,
+  maxTokens = DEFAULT_CONTEXT_TOKENS,
 ): ChatTurn[] {
   const turns: ChatTurn[] = [];
   const system = systemPrompt.trim();
@@ -42,27 +57,31 @@ export function messagesToTurns(
     turns.push({ role: message.role, content: message.content });
   }
 
-  return fitContext(turns);
+  return fitContext(turns, maxTokens);
 }
 
 export function fitContext(
   turns: ChatTurn[],
-  maxChars = DEFAULT_CONTEXT_CHARS,
+  maxTokens = DEFAULT_CONTEXT_TOKENS,
 ): ChatTurn[] {
   const system = turns.filter(turn => turn.role === 'system');
   const rest = turns.filter(turn => turn.role !== 'system');
   const kept: ChatTurn[] = [];
-  let used = system.reduce((total, turn) => total + turn.content.length, 0);
+  let used = system.reduce(
+    (total, turn) => total + estimateTokens(turn.content),
+    0,
+  );
 
   for (let index = rest.length - 1; index >= 0; index -= 1) {
     const turn = rest[index];
+    const tokens = estimateTokens(turn.content);
 
-    if (kept.length > 0 && used + turn.content.length > maxChars) {
+    if (kept.length > 0 && used + tokens > maxTokens) {
       break;
     }
 
     kept.push(turn);
-    used += turn.content.length;
+    used += tokens;
   }
 
   kept.reverse();
