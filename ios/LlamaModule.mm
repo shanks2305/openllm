@@ -9,6 +9,7 @@
 #include <vector>
 
 #import <llama/ggml-backend.h>
+#import <llama/gguf.h>
 #import <llama/llama.h>
 
 struct LlamaChatTurn {
@@ -153,6 +154,147 @@ static std::string llama_formatted_chat_prompt(
   return render_chat_fallback(architecture, turns);
 }
 
+static bool tokenize_text(const llama_vocab *vocab, const std::string &text,
+                          std::vector<llama_token> &out) {
+  const int32_t length = (int32_t)text.size();
+  int32_t count =
+      llama_tokenize(vocab, text.c_str(), length, nullptr, 0, true, true);
+
+  if (count == INT32_MIN) {
+    return false;
+  }
+
+  if (count < 0) {
+    count = -count;
+  }
+
+  out.resize((size_t)count);
+  count = llama_tokenize(vocab, text.c_str(), length, out.data(), count, true,
+                         true);
+
+  if (count < 0) {
+    return false;
+  }
+
+  out.resize((size_t)count);
+  return true;
+}
+
+static void drop_oldest_turn(std::vector<LlamaChatTurn> &turns) {
+  auto first = std::find_if(turns.begin(), turns.end(),
+                            [](const LlamaChatTurn &turn) {
+                              return turn.role != "system";
+                            });
+
+  if (first == turns.end()) {
+    return;
+  }
+
+  first = turns.erase(first);
+
+  // Templates such as Gemma require the history to open with a user turn.
+  if (first != turns.end() && first + 1 != turns.end() &&
+      first->role == "assistant") {
+    turns.erase(first);
+  }
+}
+
+static size_t droppable_turns(const std::vector<LlamaChatTurn> &turns) {
+  const size_t conversational =
+      (size_t)std::count_if(turns.begin(), turns.end(),
+                            [](const LlamaChatTurn &turn) {
+                              return turn.role != "system";
+                            });
+  return conversational > 1 ? conversational - 1 : 0;
+}
+
+static float option_float(NSDictionary *options, NSString *key,
+                          float fallback) {
+  id value = options[key];
+  return [value isKindOfClass:[NSNumber class]] ? [value floatValue] : fallback;
+}
+
+static int32_t option_int(NSDictionary *options, NSString *key,
+                          int32_t fallback) {
+  id value = options[key];
+  return [value isKindOfClass:[NSNumber class]] ? [value intValue] : fallback;
+}
+
+static std::vector<std::string> option_stops(NSDictionary *options) {
+  std::vector<std::string> stops;
+  id value = options[@"stop"];
+
+  if (![value isKindOfClass:[NSArray class]]) {
+    return stops;
+  }
+
+  for (id item in (NSArray *)value) {
+    if ([item isKindOfClass:[NSString class]] && [item length] > 0) {
+      stops.emplace_back([(NSString *)item UTF8String]);
+    }
+  }
+
+  return stops;
+}
+
+// Length of the longest suffix of `text` that could still grow into a stop
+// sequence. That part is held back so a stop string never reaches the UI.
+static size_t partial_stop_suffix(const std::string &text,
+                                  const std::vector<std::string> &stops) {
+  size_t hold = 0;
+
+  for (const std::string &stop : stops) {
+    const size_t longest = std::min(stop.size() - 1, text.size());
+
+    for (size_t length = longest; length > hold; --length) {
+      if (text.compare(text.size() - length, length, stop, 0, length) == 0) {
+        hold = length;
+        break;
+      }
+    }
+  }
+
+  return hold;
+}
+
+static uint32_t gguf_context_length(const char *path, std::string &arch) {
+  gguf_init_params params = {true, nullptr};
+  gguf_context *ctx = gguf_init_from_file(path, params);
+
+  if (ctx == nullptr) {
+    return 0;
+  }
+
+  uint32_t contextLength = 0;
+  const int64_t archKey = gguf_find_key(ctx, "general.architecture");
+
+  if (archKey >= 0 && gguf_get_kv_type(ctx, archKey) == GGUF_TYPE_STRING) {
+    arch = gguf_get_val_str(ctx, archKey);
+    const std::string key = arch + ".context_length";
+    const int64_t id = gguf_find_key(ctx, key.c_str());
+
+    if (id >= 0) {
+      switch (gguf_get_kv_type(ctx, id)) {
+      case GGUF_TYPE_UINT32:
+        contextLength = gguf_get_val_u32(ctx, id);
+        break;
+      case GGUF_TYPE_INT32:
+        contextLength = (uint32_t)std::max(0, gguf_get_val_i32(ctx, id));
+        break;
+      case GGUF_TYPE_UINT64:
+        contextLength = (uint32_t)std::min<uint64_t>(gguf_get_val_u64(ctx, id),
+                                                     UINT32_MAX);
+        break;
+      default:
+        break;
+      }
+    }
+  }
+
+  gguf_free(ctx);
+  return contextLength;
+}
+
 @implementation LlamaModule {
   llama_model *model;
   llama_context *context;
@@ -161,7 +303,10 @@ static std::string llama_formatted_chat_prompt(
   dispatch_queue_t llamaQueue;
   std::atomic_bool stopRequested;
   BOOL hasListeners;
-  ggml_backend_dev_t cpuDeviceList[2];
+  BOOL usingGpu;
+  ggml_backend_dev_t deviceList[2];
+  // Tokens currently held in the KV cache for sequence 0, in position order.
+  std::vector<llama_token> cachedTokens;
 }
 
 RCT_EXPORT_MODULE(Llama);
@@ -196,6 +341,27 @@ RCT_EXPORT_MODULE(Llama);
   });
 }
 
+- (BOOL)isValidUtf8:(const std::string &)bytes {
+  NSString *text = [[NSString alloc] initWithBytes:bytes.data()
+                                            length:bytes.size()
+                                          encoding:NSUTF8StringEncoding];
+  return text != nil;
+}
+
+- (void)emitBytes:(const std::string &)bytes {
+  if (bytes.empty()) {
+    return;
+  }
+
+  NSString *text = [[NSString alloc] initWithBytes:bytes.data()
+                                            length:bytes.size()
+                                          encoding:NSUTF8StringEncoding];
+
+  if (text != nil) {
+    [self emitToken:text];
+  }
+}
+
 - (instancetype)init {
   self = [super init];
 
@@ -205,8 +371,9 @@ RCT_EXPORT_MODULE(Llama);
     sampler = nullptr;
     stopRequested = false;
     hasListeners = NO;
-    cpuDeviceList[0] = nullptr;
-    cpuDeviceList[1] = nullptr;
+    usingGpu = NO;
+    deviceList[0] = nullptr;
+    deviceList[1] = nullptr;
     llamaQueue =
         dispatch_queue_create("com.freegpt.llama", DISPATCH_QUEUE_SERIAL);
   }
@@ -223,6 +390,7 @@ RCT_EXPORT_MODULE(Llama);
 
 - (void)freeContextAndModel {
   [self freeSampler];
+  cachedTokens.clear();
 
   if (context != nullptr) {
     llama_free(context);
@@ -262,27 +430,53 @@ RCT_EXPORT_METHOD(
       return;
     }
 
-    self->cpuDeviceList[0] = cpuDevice;
-    self->cpuDeviceList[1] = nullptr;
-
-    NSLog(@"[llama] using device %s", ggml_backend_dev_name(cpuDevice));
+    ggml_backend_dev_t gpuDevice = nullptr;
+#if !TARGET_OS_SIMULATOR
+    // The simulator's Metal implementation produces garbage logits, so the GPU
+    // is only used on physical devices.
+    gpuDevice = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+#endif
 
     llama_model_params params = llama_model_default_params();
-    params.devices = self->cpuDeviceList;
-    params.n_gpu_layers = 0;
     params.check_tensors = true;
-    self->model = llama_model_load_from_file(path.UTF8String, params);
+
+    if (gpuDevice != nullptr) {
+      self->deviceList[0] = gpuDevice;
+      self->deviceList[1] = nullptr;
+      params.devices = self->deviceList;
+      params.n_gpu_layers = -1;
+      self->model = llama_model_load_from_file(path.UTF8String, params);
+    }
+
+    self->usingGpu = self->model != nullptr;
+
+    if (self->model == nullptr) {
+      self->deviceList[0] = cpuDevice;
+      self->deviceList[1] = nullptr;
+      params.devices = self->deviceList;
+      params.n_gpu_layers = 0;
+      self->model = llama_model_load_from_file(path.UTF8String, params);
+    }
 
     if (self->model == nullptr) {
       reject(@"MODEL_LOAD_FAILED", @"Failed to load GGUF model", nil);
       return;
     }
 
-    llama_context_params contextParams = llama_context_default_params();
+    NSLog(@"[llama] using device %s",
+          ggml_backend_dev_name(self->deviceList[0]));
 
-    contextParams.n_ctx = contextSize != nil
-                              ? (uint32_t)contextSize.unsignedIntValue
-                              : llama_model_n_ctx_train(self->model);
+    llama_context_params contextParams = llama_context_default_params();
+    const int32_t trainContext = llama_model_n_ctx_train(self->model);
+    uint32_t requestedContext = contextSize != nil
+                                    ? (uint32_t)contextSize.unsignedIntValue
+                                    : (uint32_t)trainContext;
+
+    if (trainContext > 0 && requestedContext > (uint32_t)trainContext) {
+      requestedContext = (uint32_t)trainContext;
+    }
+
+    contextParams.n_ctx = requestedContext;
 
     if (batchSize != nil) {
       contextParams.n_batch = (uint32_t)batchSize.unsignedIntValue;
@@ -298,9 +492,11 @@ RCT_EXPORT_METHOD(
       contextParams.n_ubatch = contextParams.n_batch;
     }
 
-    contextParams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    contextParams.offload_kqv = false;
-    contextParams.op_offload = false;
+    contextParams.flash_attn_type = self->usingGpu
+                                        ? LLAMA_FLASH_ATTN_TYPE_AUTO
+                                        : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    contextParams.offload_kqv = self->usingGpu;
+    contextParams.op_offload = self->usingGpu;
 
     self->context = llama_init_from_model(self->model, contextParams);
 
@@ -319,17 +515,33 @@ RCT_EXPORT_METHOD(
       @"contextSize" : @(llama_n_ctx(self->context)),
       @"batchSize" : @(llama_n_batch(self->context)),
       @"microBatchSize" : @(contextParams.n_ubatch),
+      @"contextTrain" : @(trainContext),
+      @"gpu" : @(self->usingGpu),
     });
   });
 }
 
-RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
-                      maxTokens temperature : (NSNumber *)
-                          temperature topP : (NSNumber *)
-                              topP repeatPenalty : (NSNumber *)
-                                  repeatPenalty resolver : (RCTPromiseResolveBlock)
-                                      resolve rejecter : (RCTPromiseRejectBlock)
-                                          reject) {
+RCT_EXPORT_METHOD(readModelMetadata : (NSString *)path resolver : (
+    RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    std::string arch;
+    const uint32_t contextTrain = gguf_context_length(path.UTF8String, arch);
+
+    if (contextTrain == 0 && arch.empty()) {
+      reject(@"METADATA_FAILED", @"Could not read model metadata", nil);
+      return;
+    }
+
+    resolve(@{
+      @"architecture" : [NSString stringWithUTF8String:arch.c_str()] ?: @"",
+      @"contextTrain" : @(contextTrain),
+    });
+  });
+}
+
+RCT_EXPORT_METHOD(generate : (NSString *)prompt options : (NSDictionary *)
+                      options resolver : (RCTPromiseResolveBlock)
+                          resolve rejecter : (RCTPromiseRejectBlock)reject) {
   dispatch_async(llamaQueue, ^{
     if (self->model == nullptr || self->context == nullptr) {
       reject(@"MODEL_NOT_LOADED", @"Model must be loaded before generation",
@@ -340,11 +552,7 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
     self->stopRequested = false;
     [self freeSampler];
 
-    llama_memory_t memory = llama_get_memory(self->context);
-    llama_memory_seq_rm(memory, -1, -1, -1);
-    llama_memory_clear(memory, true);
-
-    const std::vector<LlamaChatTurn> turns = parse_chat_turns(prompt);
+    std::vector<LlamaChatTurn> turns = parse_chat_turns(prompt);
 
     if (turns.empty()) {
       reject(@"TOKENIZE_FAILED", @"Prompt is empty", nil);
@@ -352,54 +560,86 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
     }
 
     const llama_vocab *vocab = llama_model_get_vocab(self->model);
-    const int32_t maxNewTokens = maxTokens != nil ? maxTokens.intValue : 256;
-    const float temp = temperature != nil ? temperature.floatValue : 0.8f;
-    const float top = topP != nil ? std::min(1.f, std::max(0.f, topP.floatValue))
-                                  : 0.9f;
-    const float penalty =
-        repeatPenalty != nil
-            ? std::min(2.f, std::max(1.f, repeatPenalty.floatValue))
-            : 1.1f;
-    const std::string formattedPrompt =
-        llama_formatted_chat_prompt(self->model, turns);
-    const int32_t promptLength = (int32_t)formattedPrompt.size();
-    const bool isFirst = llama_memory_seq_pos_max(memory, 0) == -1;
+    const int32_t nCtx = (int32_t)llama_n_ctx(self->context);
+    const int32_t maxNewTokens = std::max(
+        1, std::min(option_int(options, @"maxTokens", 256), nCtx / 2));
+    const float temp = option_float(options, @"temperature", 0.7f);
+    const float top =
+        std::min(1.f, std::max(0.f, option_float(options, @"topP", 0.9f)));
+    const float minP =
+        std::min(1.f, std::max(0.f, option_float(options, @"minP", 0.05f)));
+    const int32_t topK = std::max(0, option_int(options, @"topK", 0));
+    const float penalty = std::min(
+        2.f, std::max(1.f, option_float(options, @"repeatPenalty", 1.1f)));
+    const int32_t seed = option_int(options, @"seed", -1);
+    const std::vector<std::string> stops = option_stops(options);
+    const int32_t promptBudget = nCtx - maxNewTokens;
 
-    int32_t tokenCount = llama_tokenize(vocab, formattedPrompt.c_str(),
-                                        promptLength, nullptr, 0, isFirst,
-                                        true);
+    std::vector<llama_token> promptTokens;
+    size_t droppedTurns = 0;
 
-    if (tokenCount == INT32_MIN) {
-      reject(@"TOKENIZE_FAILED", @"Prompt is too long to tokenize", nil);
-      return;
+    while (true) {
+      const std::string formattedPrompt =
+          llama_formatted_chat_prompt(self->model, turns);
+
+      if (!tokenize_text(vocab, formattedPrompt, promptTokens)) {
+        reject(@"TOKENIZE_FAILED", @"Failed to tokenize prompt", nil);
+        return;
+      }
+
+      if ((int32_t)promptTokens.size() <= promptBudget ||
+          droppable_turns(turns) == 0) {
+        break;
+      }
+
+      const size_t before = turns.size();
+      drop_oldest_turn(turns);
+      droppedTurns += before - turns.size();
     }
 
-    if (tokenCount < 0) {
-      tokenCount = -tokenCount;
-    }
-
-    std::vector<llama_token> promptTokens((size_t)tokenCount);
-    tokenCount = llama_tokenize(vocab, formattedPrompt.c_str(), promptLength,
-                                promptTokens.data(), tokenCount, isFirst,
-                                true);
-
-    if (tokenCount < 0) {
-      reject(@"TOKENIZE_FAILED", @"Failed to tokenize prompt", nil);
-      return;
-    }
-
-    promptTokens.resize((size_t)tokenCount);
+    const int32_t tokenCount = (int32_t)promptTokens.size();
 
     if (tokenCount == 0) {
       reject(@"TOKENIZE_FAILED", @"Prompt produced no tokens", nil);
       return;
     }
 
+    if (tokenCount > promptBudget) {
+      reject(@"CONTEXT_OVERFLOW",
+             @"This message is too long for the context size. Shorten it, "
+             @"lower the response length, or raise the context size in "
+             @"Settings.",
+             nil);
+      return;
+    }
+
+    // Reuse the KV cache for the prefix shared with the previous prompt. At
+    // least one prompt token is always decoded so fresh logits are available.
+    size_t reused = 0;
+    const size_t cacheLimit =
+        std::min(self->cachedTokens.size(), promptTokens.size() - 1);
+
+    while (reused < cacheLimit &&
+           self->cachedTokens[reused] == promptTokens[reused]) {
+      reused += 1;
+    }
+
+    llama_memory_t memory = llama_get_memory(self->context);
+
+    if (reused == 0 ||
+        !llama_memory_seq_rm(memory, 0, (llama_pos)reused, -1)) {
+      llama_memory_clear(memory, true);
+      reused = 0;
+    }
+
+    self->cachedTokens.assign(promptTokens.begin(),
+                              promptTokens.begin() + (long)reused);
+
     const int32_t nBatch = (int32_t)llama_n_ubatch(self->context);
     llama_batch batch = llama_batch_init(nBatch, 0, 1);
-    int32_t nPast = 0;
+    int32_t nPast = (int32_t)reused;
 
-    for (int32_t consumed = 0; consumed < tokenCount;) {
+    for (int32_t consumed = (int32_t)reused; consumed < tokenCount;) {
       const int32_t remaining = tokenCount - consumed;
       const int32_t nEval = remaining < nBatch ? remaining : nBatch;
       batch.n_tokens = nEval;
@@ -417,10 +657,15 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
 
       if (result != 0) {
         llama_batch_free(batch);
+        llama_memory_clear(memory, true);
+        self->cachedTokens.clear();
         reject(@"DECODE_FAILED", @"Failed to decode prompt", nil);
         return;
       }
 
+      self->cachedTokens.insert(self->cachedTokens.end(),
+                                promptTokens.begin() + consumed,
+                                promptTokens.begin() + consumed + nEval);
       consumed += nEval;
       nPast += nEval;
     }
@@ -442,24 +687,35 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
                                                       0.0f));
     }
 
-    llama_sampler_chain_add(self->sampler, llama_sampler_init_min_p(0.05f, 1));
+    if (topK > 0) {
+      llama_sampler_chain_add(self->sampler, llama_sampler_init_top_k(topK));
+    }
 
     if (top > 0.0f && top < 1.0f) {
       llama_sampler_chain_add(self->sampler, llama_sampler_init_top_p(top, 1));
+    }
+
+    if (minP > 0.0f) {
+      llama_sampler_chain_add(self->sampler, llama_sampler_init_min_p(minP, 1));
     }
 
     if (temp <= 0.0f) {
       llama_sampler_chain_add(self->sampler, llama_sampler_init_greedy());
     } else {
       llama_sampler_chain_add(self->sampler, llama_sampler_init_temp(temp));
-      llama_sampler_chain_add(self->sampler,
-                              llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+      llama_sampler_chain_add(
+          self->sampler,
+          llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED
+                                           : (uint32_t)seed));
     }
 
     std::string utf8Carry;
+    std::string pending;
     std::string generated;
+    int32_t generatedTokens = 0;
+    bool hitStop = false;
 
-    for (int32_t i = 0; i < maxNewTokens; ++i) {
+    for (int32_t i = 0; i < maxNewTokens && nPast < nCtx; ++i) {
       if (self->stopRequested) {
         break;
       }
@@ -487,15 +743,32 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
         utf8Carry.append(piece, (size_t)pieceLength);
       }
 
-      if (!utf8Carry.empty()) {
-        NSString *text = [[NSString alloc] initWithBytes:utf8Carry.data()
-                                                  length:utf8Carry.size()
-                                                encoding:NSUTF8StringEncoding];
-        if (text != nil) {
-          generated.append(utf8Carry);
-          utf8Carry.clear();
-          [self emitToken:text];
+      generatedTokens += 1;
+
+      if (!utf8Carry.empty() && [self isValidUtf8:utf8Carry]) {
+        pending.append(utf8Carry);
+        utf8Carry.clear();
+
+        size_t stopAt = std::string::npos;
+
+        for (const std::string &stop : stops) {
+          stopAt = std::min(stopAt, pending.find(stop));
         }
+
+        if (stopAt != std::string::npos) {
+          pending.resize(stopAt);
+          hitStop = true;
+        }
+
+        const size_t hold = hitStop ? 0 : partial_stop_suffix(pending, stops);
+        const std::string ready = pending.substr(0, pending.size() - hold);
+        pending.erase(0, ready.size());
+        generated.append(ready);
+        [self emitBytes:ready];
+      }
+
+      if (hitStop) {
+        break;
       }
 
       batch.n_tokens = 1;
@@ -510,12 +783,18 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
       if (result != 0) {
         llama_batch_free(batch);
         [self freeSampler];
+        llama_memory_clear(memory, true);
+        self->cachedTokens.clear();
         reject(@"DECODE_FAILED", @"Failed during token generation", nil);
         return;
       }
 
+      self->cachedTokens.push_back(token);
       nPast += 1;
     }
+
+    generated.append(pending);
+    [self emitBytes:pending];
 
     llama_batch_free(batch);
     [self freeSampler];
@@ -524,7 +803,14 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt maxTokens : (NSNumber *)
         [[NSString alloc] initWithBytes:generated.data()
                                  length:generated.size()
                                encoding:NSUTF8StringEncoding];
-    resolve(resultText ?: @"");
+    resolve(@{
+      @"text" : resultText ?: @"",
+      @"promptTokens" : @(tokenCount),
+      @"reusedTokens" : @(reused),
+      @"generatedTokens" : @(generatedTokens),
+      @"droppedTurns" : @(droppedTurns),
+      @"gpu" : @(self->usingGpu),
+    });
   });
 }
 

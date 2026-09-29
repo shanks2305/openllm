@@ -18,6 +18,7 @@ import {
   partialRestPath,
   readFileSize,
   readManifest,
+  readTrainedContext,
   removeFileIfExists,
   sanitizeModelId,
   toFsPath,
@@ -285,6 +286,29 @@ class ModelManager {
     await this.discoverInterrupted();
     this.ready = true;
     this.emit();
+    this.backfillMetadata().catch(() => undefined);
+  }
+
+  private async backfillMetadata() {
+    let changed = false;
+
+    for (const model of Object.values(this.manifest.installed)) {
+      if (model.contextTrain) {
+        continue;
+      }
+
+      const contextTrain = await readTrainedContext(model.path);
+
+      if (contextTrain && this.manifest.installed[model.id]) {
+        this.manifest.installed[model.id] = { ...model, contextTrain };
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await writeManifest(this.manifest);
+      this.emit();
+    }
   }
 
   private async reconcileFiles() {
@@ -665,7 +689,10 @@ class ModelManager {
   }
 
   private async register(model: InstalledModel) {
-    this.manifest.installed[model.id] = model;
+    const contextTrain = await readTrainedContext(model.path);
+    this.manifest.installed[model.id] = contextTrain
+      ? { ...model, contextTrain }
+      : model;
 
     if (!this.manifest.selectedId) {
       this.manifest.selectedId = model.id;

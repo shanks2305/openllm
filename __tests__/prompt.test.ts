@@ -1,8 +1,27 @@
 import {
+  cleanGeneratedTitle,
   fitContext,
   messagesToTurns,
   titleFromMessages,
 } from '../src/chat/prompt';
+
+describe('cleanGeneratedTitle', () => {
+  it('strips labels, quotes, markdown, and trailing punctuation', () => {
+    expect(cleanGeneratedTitle('Title: "Sorting Arrays in Rust".')).toBe(
+      'Sorting Arrays in Rust',
+    );
+    expect(cleanGeneratedTitle('**Trip Planning**\nextra line')).toBe(
+      'Trip Planning',
+    );
+  });
+
+  it('rejects empty output and clips long titles', () => {
+    expect(cleanGeneratedTitle('  \n "" ')).toBeNull();
+    const long = cleanGeneratedTitle('word '.repeat(30));
+    expect(long?.endsWith('…')).toBe(true);
+    expect(long!.length).toBeLessThanOrEqual(61);
+  });
+});
 import type { ChatMessage } from '../src/chat/types';
 
 function message(

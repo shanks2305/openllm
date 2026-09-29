@@ -6,13 +6,23 @@ export type AppSettings = {
   systemPrompt: string;
   contextSize: number;
   topP: number;
+  topK: number;
+  minP: number;
   repeatPenalty: number;
+  seed: number;
+  stopSequences: string[];
 };
 
 type Listener = () => void;
 
 export const MAX_TOKEN_OPTIONS = [128, 256, 512, 1024, 2048] as const;
-export const CONTEXT_SIZE_OPTIONS = [2048, 4096, 8192] as const;
+export const CONTEXT_SIZE_OPTIONS = [2048, 4096, 8192, 16384, 32768] as const;
+export const TOP_K_OPTIONS = [0, 20, 40, 80] as const;
+export const LARGE_CONTEXT = 8192;
+export const RANDOM_SEED = -1;
+
+const MAX_STOP_SEQUENCES = 8;
+const MAX_STOP_LENGTH = 40;
 
 const DEFAULT_SETTINGS: AppSettings = {
   temperature: 0.7,
@@ -20,13 +30,53 @@ const DEFAULT_SETTINGS: AppSettings = {
   systemPrompt: '',
   contextSize: 4096,
   topP: 0.9,
+  topK: 0,
+  minP: 0.05,
   repeatPenalty: 1.1,
+  seed: RANDOM_SEED,
+  stopSequences: [],
 };
 
 export function maxTokensForContext(contextSize: number): number[] {
   const cap = Math.floor(contextSize / 2);
   const allowed = MAX_TOKEN_OPTIONS.filter(option => option <= cap);
   return allowed.length > 0 ? [...allowed] : [MAX_TOKEN_OPTIONS[0]];
+}
+
+export function contextOptionsForModel(contextTrain?: number): number[] {
+  if (!contextTrain) {
+    return CONTEXT_SIZE_OPTIONS.filter(option => option <= LARGE_CONTEXT);
+  }
+
+  const allowed = CONTEXT_SIZE_OPTIONS.filter(option => option <= contextTrain);
+  return allowed.length > 0 ? allowed : [CONTEXT_SIZE_OPTIONS[0]];
+}
+
+export function effectiveContextSize(
+  contextSize: number,
+  contextTrain?: number,
+) {
+  const options = contextOptionsForModel(contextTrain);
+  const fitting = options.filter(option => option <= contextSize);
+  return fitting.length > 0 ? fitting[fitting.length - 1] : options[0];
+}
+
+export function parseStopSequences(text: string): string[] {
+  const seen = new Set<string>();
+
+  for (const line of text.split('\n')) {
+    const value = line.replace(/\\n/g, '\n').slice(0, MAX_STOP_LENGTH);
+
+    if (line.trim() && seen.size < MAX_STOP_SEQUENCES) {
+      seen.add(value);
+    }
+  }
+
+  return [...seen];
+}
+
+export function formatStopSequences(stops: string[]) {
+  return stops.map(stop => stop.replace(/\n/g, '\\n')).join('\n');
 }
 
 const settingsPath = () => `${RNFS.DocumentDirectoryPath}/settings.json`;
@@ -57,6 +107,35 @@ function clampTopP(value: number) {
 function clampRepeatPenalty(value: number) {
   const next = Math.round(Math.min(1.5, Math.max(1, value)) * 10) / 10;
   return Number.isFinite(next) ? next : DEFAULT_SETTINGS.repeatPenalty;
+}
+
+function normalizeTopK(value: number) {
+  return TOP_K_OPTIONS.includes(value as (typeof TOP_K_OPTIONS)[number])
+    ? value
+    : DEFAULT_SETTINGS.topK;
+}
+
+function clampMinP(value: number) {
+  const next = Math.round(Math.min(0.5, Math.max(0, value)) * 20) / 20;
+  return Number.isFinite(next) ? next : DEFAULT_SETTINGS.minP;
+}
+
+function normalizeSeed(value: number) {
+  if (!Number.isFinite(value) || value < 0) {
+    return RANDOM_SEED;
+  }
+
+  return Math.min(Math.floor(value), 2_147_483_647);
+}
+
+function normalizeStops(value: unknown) {
+  if (!Array.isArray(value)) {
+    return DEFAULT_SETTINGS.stopSequences;
+  }
+
+  return parseStopSequences(
+    formatStopSequences(value.filter(item => typeof item === 'string')),
+  );
 }
 
 function normalizeSettings(value: Partial<AppSettings>): AppSettings {
@@ -91,6 +170,16 @@ function normalizeSettings(value: Partial<AppSettings>): AppSettings {
         ? value.repeatPenalty
         : DEFAULT_SETTINGS.repeatPenalty,
     ),
+    topK: normalizeTopK(
+      typeof value.topK === 'number' ? value.topK : DEFAULT_SETTINGS.topK,
+    ),
+    minP: clampMinP(
+      typeof value.minP === 'number' ? value.minP : DEFAULT_SETTINGS.minP,
+    ),
+    seed: normalizeSeed(
+      typeof value.seed === 'number' ? value.seed : DEFAULT_SETTINGS.seed,
+    ),
+    stopSequences: normalizeStops(value.stopSequences),
   };
 }
 
@@ -179,6 +268,29 @@ class SettingsStore {
     this.settings = {
       ...this.settings,
       repeatPenalty: clampRepeatPenalty(value),
+    };
+    this.persist();
+  };
+
+  setTopK = (value: number) => {
+    this.settings = { ...this.settings, topK: normalizeTopK(value) };
+    this.persist();
+  };
+
+  setMinP = (value: number) => {
+    this.settings = { ...this.settings, minP: clampMinP(value) };
+    this.persist();
+  };
+
+  setSeed = (value: number) => {
+    this.settings = { ...this.settings, seed: normalizeSeed(value) };
+    this.persist();
+  };
+
+  setStopSequences = (text: string) => {
+    this.settings = {
+      ...this.settings,
+      stopSequences: parseStopSequences(text),
     };
     this.persist();
   };

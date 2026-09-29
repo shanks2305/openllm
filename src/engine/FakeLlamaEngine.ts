@@ -1,4 +1,9 @@
-import type { ChatTurn, GenerateOptions, LlamaEngine } from './LlamaEngine';
+import type {
+  ChatTurn,
+  GenerateOptions,
+  GenerateResult,
+  LlamaEngine,
+} from './LlamaEngine';
 
 export class FakeLlamaEngine implements LlamaEngine {
   private stopped = false;
@@ -11,7 +16,7 @@ export class FakeLlamaEngine implements LlamaEngine {
     messages: ChatTurn[],
     onToken: (token: string) => void,
     _options?: GenerateOptions,
-  ): Promise<void> {
+  ): Promise<GenerateResult | null> {
     this.stopped = false;
 
     const prompt =
@@ -27,13 +32,22 @@ export class FakeLlamaEngine implements LlamaEngine {
 
     for (const token of tokens) {
       if (this.stopped) {
-        return;
+        return null;
       }
 
       onToken(token);
 
       await new Promise<void>(resolve => setTimeout(resolve, 35));
     }
+
+    return {
+      text: response,
+      promptTokens: 0,
+      reusedTokens: 0,
+      generatedTokens: tokens.length,
+      droppedTurns: 0,
+      gpu: false,
+    };
   }
 
   async stopGeneration(): Promise<void> {

@@ -1,96 +1,197 @@
-import type { CatalogModel } from './types';
+import type { CatalogModel, CatalogVariant } from './types';
 
-export const MODEL_CATALOG: CatalogModel[] = [
+type Family = {
+  family: string;
+  name: string;
+  description: string;
+  defaultQuant: string;
+  repo: string;
+  files: Array<[quant: string, sizeBytes: number, filename: string]>;
+};
+
+const FAMILIES: Family[] = [
   {
-    id: 'smollm2-360m-instruct-q8_0',
+    family: 'smollm2-360m-instruct',
     name: 'SmolLM2 360M Instruct',
     description: 'Tiny Hugging Face model. Best for older phones and quick tests.',
-    quant: 'Q8_0',
-    sizeBytes: 386404992,
-    url: 'https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct-GGUF/resolve/main/smollm2-360m-instruct-q8_0.gguf',
+    defaultQuant: 'Q8_0',
+    repo: 'HuggingFaceTB/SmolLM2-360M-Instruct-GGUF',
+    files: [['Q8_0', 386404992, 'smollm2-360m-instruct-q8_0.gguf']],
   },
   {
-    id: 'qwen2.5-0.5b-instruct-q4_k_m',
+    family: 'qwen2.5-0.5b-instruct',
     name: 'Qwen2.5 0.5B Instruct',
     description: 'Smallest Qwen chat model. Fast starting point for on-device replies.',
-    quant: 'Q4_K_M',
-    sizeBytes: 491400032,
-    url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'Qwen/Qwen2.5-0.5B-Instruct-GGUF',
+    files: [
+      ['Q4_K_M', 491400032, 'qwen2.5-0.5b-instruct-q4_k_m.gguf'],
+      ['Q5_K_M', 522186592, 'qwen2.5-0.5b-instruct-q5_k_m.gguf'],
+      ['Q8_0', 675710816, 'qwen2.5-0.5b-instruct-q8_0.gguf'],
+    ],
   },
   {
-    id: 'tinyllama-1.1b-chat-q4_k_m',
+    family: 'tinyllama-1.1b-chat',
     name: 'TinyLlama 1.1B Chat',
     description: 'Very small Llama-style chat model. Light on RAM and storage.',
-    quant: 'Q4_K_M',
-    sizeBytes: 668788096,
-    url: 'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF',
+    files: [
+      ['Q3_K_M', 550819200, 'tinyllama-1.1b-chat-v1.0.Q3_K_M.gguf'],
+      ['Q4_K_M', 668788096, 'tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf'],
+      ['Q5_K_M', 783017344, 'tinyllama-1.1b-chat-v1.0.Q5_K_M.gguf'],
+      ['Q8_0', 1170781568, 'tinyllama-1.1b-chat-v1.0.Q8_0.gguf'],
+    ],
   },
   {
-    id: 'gemma-3-1b-it-q4_k_m',
+    family: 'gemma-3-1b-it',
     name: 'Gemma 3 1B Instruct',
     description: 'Google’s 1B instruct model. Good quality in a phone-sized file.',
-    quant: 'Q4_K_M',
-    sizeBytes: 806058272,
-    url: 'https://huggingface.co/unsloth/gemma-3-1b-it-GGUF/resolve/main/gemma-3-1b-it-Q4_K_M.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'unsloth/gemma-3-1b-it-GGUF',
+    files: [
+      ['Q3_K_M', 722416160, 'gemma-3-1b-it-Q3_K_M.gguf'],
+      ['Q4_K_M', 806058272, 'gemma-3-1b-it-Q4_K_M.gguf'],
+      ['Q5_K_M', 851345696, 'gemma-3-1b-it-Q5_K_M.gguf'],
+      ['Q8_0', 1069306400, 'gemma-3-1b-it-Q8_0.gguf'],
+    ],
   },
   {
-    id: 'llama-3.2-1b-instruct-q4_k_m',
+    family: 'llama-3.2-1b-instruct',
     name: 'Llama 3.2 1B Instruct',
     description: 'Meta’s compact instruct model. Strong English for its size.',
-    quant: 'Q4_K_M',
-    sizeBytes: 807694464,
-    url: 'https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
+    files: [
+      ['IQ4_XS', 743141504, 'Llama-3.2-1B-Instruct-IQ4_XS.gguf'],
+      ['Q4_K_M', 807694464, 'Llama-3.2-1B-Instruct-Q4_K_M.gguf'],
+      ['Q5_K_M', 911503488, 'Llama-3.2-1B-Instruct-Q5_K_M.gguf'],
+      ['Q8_0', 1321083008, 'Llama-3.2-1B-Instruct-Q8_0.gguf'],
+    ],
   },
   {
-    id: 'smollm2-1.7b-instruct-q4_k_m',
+    family: 'smollm2-1.7b-instruct',
     name: 'SmolLM2 1.7B Instruct',
     description: 'Built for on-device use. Faster than most 3B models.',
-    quant: 'Q4_K_M',
-    sizeBytes: 1055609536,
-    url: 'https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF',
+    files: [['Q4_K_M', 1055609536, 'smollm2-1.7b-instruct-q4_k_m.gguf']],
   },
   {
-    id: 'qwen2.5-1.5b-instruct-q4_k_m',
+    family: 'qwen2.5-1.5b-instruct',
     name: 'Qwen2.5 1.5B Instruct',
     description: 'Balanced multilingual chat. Reasonable on newer phones.',
-    quant: 'Q4_K_M',
-    sizeBytes: 1117320736,
-    url: 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'Qwen/Qwen2.5-1.5B-Instruct-GGUF',
+    files: [
+      ['Q3_K_M', 924455968, 'qwen2.5-1.5b-instruct-q3_k_m.gguf'],
+      ['Q4_K_M', 1117320736, 'qwen2.5-1.5b-instruct-q4_k_m.gguf'],
+      ['Q5_K_M', 1285494304, 'qwen2.5-1.5b-instruct-q5_k_m.gguf'],
+      ['Q8_0', 1894532128, 'qwen2.5-1.5b-instruct-q8_0.gguf'],
+    ],
   },
   {
-    id: 'qwen2.5-coder-1.5b-instruct-q4_k_m',
+    family: 'qwen2.5-coder-1.5b-instruct',
     name: 'Qwen2.5 Coder 1.5B',
     description: 'Same size class as 1.5B chat, tuned for code questions.',
-    quant: 'Q4_K_M',
-    sizeBytes: 1117320768,
-    url: 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF',
+    files: [
+      ['Q3_K_M', 924456000, 'qwen2.5-coder-1.5b-instruct-q3_k_m.gguf'],
+      ['Q4_K_M', 1117320768, 'qwen2.5-coder-1.5b-instruct-q4_k_m.gguf'],
+      ['Q5_K_M', 1285494336, 'qwen2.5-coder-1.5b-instruct-q5_k_m.gguf'],
+      ['Q8_0', 1894532160, 'qwen2.5-coder-1.5b-instruct-q8_0.gguf'],
+    ],
   },
   {
-    id: 'gemma-2-2b-it-q4_k_m',
+    family: 'gemma-2-2b-it',
     name: 'Gemma 2 2B Instruct',
     description: 'Stronger replies than 1B-class models. Needs more RAM.',
-    quant: 'Q4_K_M',
-    sizeBytes: 1708582752,
-    url: 'https://huggingface.co/bartowski/gemma-2-2b-it-GGUF/resolve/main/gemma-2-2b-it-Q4_K_M.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'bartowski/gemma-2-2b-it-GGUF',
+    files: [
+      ['IQ4_XS', 1566250848, 'gemma-2-2b-it-IQ4_XS.gguf'],
+      ['Q4_K_M', 1708582752, 'gemma-2-2b-it-Q4_K_M.gguf'],
+      ['Q5_K_M', 1923278688, 'gemma-2-2b-it-Q5_K_M.gguf'],
+      ['Q8_0', 2784495456, 'gemma-2-2b-it-Q8_0.gguf'],
+    ],
   },
   {
-    id: 'llama-3.2-3b-instruct-q4_k_m',
+    family: 'llama-3.2-3b-instruct',
     name: 'Llama 3.2 3B Instruct',
     description: 'Best general Llama in this list. Plan on ~2GB disk and more RAM.',
-    quant: 'Q4_K_M',
-    sizeBytes: 2019377696,
-    url: 'https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'bartowski/Llama-3.2-3B-Instruct-GGUF',
+    files: [
+      ['IQ4_XS', 1829110304, 'Llama-3.2-3B-Instruct-IQ4_XS.gguf'],
+      ['Q4_K_M', 2019377696, 'Llama-3.2-3B-Instruct-Q4_K_M.gguf'],
+      ['Q5_K_M', 2322154016, 'Llama-3.2-3B-Instruct-Q5_K_M.gguf'],
+      ['Q8_0', 3421899296, 'Llama-3.2-3B-Instruct-Q8_0.gguf'],
+    ],
   },
   {
-    id: 'qwen2.5-3b-instruct-q4_k_m',
+    family: 'qwen2.5-3b-instruct',
     name: 'Qwen2.5 3B Instruct',
     description: 'Highest-quality Qwen here. Best on devices with plenty of storage.',
-    quant: 'Q4_K_M',
-    sizeBytes: 2104932768,
-    url: 'https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf',
+    defaultQuant: 'Q4_K_M',
+    repo: 'Qwen/Qwen2.5-3B-Instruct-GGUF',
+    files: [
+      ['Q3_K_M', 1724178848, 'qwen2.5-3b-instruct-q3_k_m.gguf'],
+      ['Q4_K_M', 2104932768, 'qwen2.5-3b-instruct-q4_k_m.gguf'],
+      ['Q5_K_M', 2438740384, 'qwen2.5-3b-instruct-q5_k_m.gguf'],
+      ['Q8_0', 3616088480, 'qwen2.5-3b-instruct-q8_0.gguf'],
+    ],
   },
 ];
 
+function toCatalogModel(family: Family): CatalogModel {
+  const variants: CatalogVariant[] = family.files.map(
+    ([quant, sizeBytes, filename]) => ({
+      id: `${family.family}-${quant.toLowerCase()}`,
+      quant,
+      sizeBytes,
+      url: `https://huggingface.co/${family.repo}/resolve/main/${filename}`,
+    }),
+  );
+  const primary =
+    variants.find(variant => variant.quant === family.defaultQuant) ??
+    variants[0];
+
+  return {
+    ...primary,
+    name: family.name,
+    description: family.description,
+    variants,
+  };
+}
+
+export const MODEL_CATALOG: CatalogModel[] = FAMILIES.map(toCatalogModel);
+
+export const QUANT_NOTES: Record<string, string> = {
+  Q3_K_M: 'Smallest. Noticeably lower quality.',
+  IQ4_XS: 'A little smaller than Q4_K_M with similar quality.',
+  Q4_K_M: 'Recommended balance of size and quality.',
+  Q5_K_M: 'Slightly better quality, a bit larger.',
+  Q8_0: 'Close to full quality. Largest and slowest.',
+};
+
+// Resolves a catalog model or any of its quant variants. Non-default variants
+// carry the quant in the name so they are distinguishable once installed.
 export function getCatalogModel(id: string): CatalogModel | undefined {
-  return MODEL_CATALOG.find(model => model.id === id);
+  for (const model of MODEL_CATALOG) {
+    const variant = model.variants.find(item => item.id === id);
+
+    if (!variant) {
+      continue;
+    }
+
+    return {
+      ...model,
+      ...variant,
+      name:
+        variant.id === model.id ? model.name : `${model.name} ${variant.quant}`,
+    };
+  }
+
+  return undefined;
 }

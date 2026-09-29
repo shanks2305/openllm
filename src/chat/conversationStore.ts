@@ -134,12 +134,24 @@ export class ConversationStore {
 
     chat.messages = messages;
 
-    if (!chat.titleCustom) {
+    if (!chat.titleCustom && !chat.titleGenerated) {
       chat.title = titleFromMessages(messages);
     }
 
     chat.updatedAt = Date.now();
     this.commit(false);
+  }
+
+  setGeneratedTitle(id: string, title: string) {
+    const chat = this.conversations.find(item => item.id === id);
+
+    if (!chat || chat.titleCustom) {
+      return;
+    }
+
+    chat.title = title.slice(0, 80);
+    chat.titleGenerated = true;
+    this.commit(true);
   }
 
   rename(id: string, title: string) {
@@ -153,6 +165,7 @@ export class ConversationStore {
 
     if (!trimmed) {
       chat.titleCustom = false;
+      chat.titleGenerated = false;
       chat.title = titleFromMessages(chat.messages);
     } else {
       chat.titleCustom = true;
@@ -313,13 +326,15 @@ function normalizeConversation(chat: Conversation): Conversation {
       typeof chat.title === 'string' && chat.title.trim()
         ? chat.title
         : 'New chat',
-    messages: chat.messages.filter(
-      message =>
-        !!message &&
-        (message.role === 'user' || message.role === 'assistant') &&
-        typeof message.id === 'string' &&
-        typeof message.content === 'string',
-    ),
+    messages: chat.messages
+      .filter(
+        message =>
+          !!message &&
+          (message.role === 'user' || message.role === 'assistant') &&
+          typeof message.id === 'string' &&
+          typeof message.content === 'string',
+      )
+      .map(normalizeMessage),
     createdAt: typeof chat.createdAt === 'number' ? chat.createdAt : now,
     updatedAt: typeof chat.updatedAt === 'number' ? chat.updatedAt : now,
     ...(typeof chat.modelId === 'string' && chat.modelId
@@ -327,6 +342,39 @@ function normalizeConversation(chat: Conversation): Conversation {
       : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
     titleCustom: chat.titleCustom === true,
+    titleGenerated: chat.titleGenerated === true,
+  };
+}
+
+function normalizeMessage(message: ChatMessage): ChatMessage {
+  const base: ChatMessage = {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+  };
+  const stats = message.stats;
+
+  if (
+    message.role !== 'assistant' ||
+    !stats ||
+    typeof stats !== 'object' ||
+    typeof stats.tokens !== 'number'
+  ) {
+    return base;
+  }
+
+  return {
+    ...base,
+    stats: {
+      tokens: stats.tokens,
+      gpu: stats.gpu === true,
+      tokensPerSecond:
+        typeof stats.tokensPerSecond === 'number' ? stats.tokensPerSecond : null,
+      timeToFirstTokenMs:
+        typeof stats.timeToFirstTokenMs === 'number'
+          ? stats.timeToFirstTokenMs
+          : null,
+    },
   };
 }
 

@@ -30,6 +30,10 @@ export function useSettings() {
     setContextSize: settingsStore.setContextSize,
     setTopP: settingsStore.setTopP,
     setRepeatPenalty: settingsStore.setRepeatPenalty,
+    setTopK: settingsStore.setTopK,
+    setMinP: settingsStore.setMinP,
+    setSeed: settingsStore.setSeed,
+    setStopSequences: settingsStore.setStopSequences,
     setSystemPrompt: settingsStore.setSystemPrompt,
   };
 }

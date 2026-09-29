@@ -4,12 +4,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { conversationToMarkdown } from '../chat/export';
 import { instructionLabel } from '../chat/instructions';
 import { colors, spacing, typography } from '../theme';
 import { useChat } from '../hooks/useChat';
@@ -101,6 +103,20 @@ const ChatScreen = () => {
 
   const closeSidebar = () => setSidebarOpen(false);
 
+  const shareChat = (id: string) => {
+    const chat = conversations.find(item => item.id === id);
+
+    if (!chat) {
+      return;
+    }
+
+    const modelName = installed.find(model => model.id === chat.modelId)?.name;
+    Share.share({
+      title: chat.title,
+      message: conversationToMarkdown(chat, modelName),
+    }).catch(alertError);
+  };
+
   const submit = (text: string) => {
     const task = editingId ? editAndResend(editingId, text) : sendMessage(text);
     setEditingId(null);
@@ -118,6 +134,11 @@ const ChatScreen = () => {
           title={activeTitle}
           onOpenSidebar={() => setSidebarOpen(true)}
           onOpenSettings={() => navigation.navigate('Settings')}
+          onShare={
+            activeId && messages.length > 0 && !generating
+              ? () => shareChat(activeId)
+              : undefined
+          }
         />
         {messages.length === 0 ? (
           <EmptyState
@@ -198,6 +219,7 @@ const ChatScreen = () => {
             id: chat.id,
             title: chat.title,
             modelName: installed.find(model => model.id === chat.modelId)?.name,
+            messages: chat.messages,
           }))}
           activeId={activeId}
           modelName={selectedModel?.name}
@@ -231,6 +253,7 @@ const ChatScreen = () => {
             );
           }}
           onRenameChat={renameChat}
+          onShareChat={shareChat}
           onOpenModels={() => {
             closeSidebar();
             navigation.navigate('Models');

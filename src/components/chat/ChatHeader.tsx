@@ -7,12 +7,14 @@ type ChatHeaderProps = {
   title?: string;
   onOpenSidebar: () => void;
   onOpenSettings: () => void;
+  onShare?: () => void;
 };
 
 export function ChatHeader({
   title = 'llmOS',
   onOpenSidebar,
   onOpenSettings,
+  onShare,
 }: ChatHeaderProps) {
   const insets = useSafeAreaInsets();
 
@@ -29,6 +31,13 @@ export function ChatHeader({
         {title}
       </Text>
       <View style={[styles.side, styles.sideEnd]}>
+        {onShare ? (
+          <IconButton
+            label="⇪"
+            accessibilityLabel="Share this chat"
+            onPress={onShare}
+          />
+        ) : null}
         <IconButton
           label="⚙"
           accessibilityLabel="Open settings"
@@ -50,11 +59,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   side: {
-    width: 40,
-    alignItems: 'flex-start',
+    width: 80,
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    gap: spacing.sm,
   },
   sideEnd: {
-    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
   },
   title: {
     ...typography.body,

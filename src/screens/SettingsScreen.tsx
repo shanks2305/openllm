@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -17,8 +18,13 @@ import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { useModels } from '../hooks/useModels';
 import { useSettings } from '../hooks/useSettings';
 import {
-  CONTEXT_SIZE_OPTIONS,
+  contextOptionsForModel,
+  effectiveContextSize,
+  formatStopSequences,
+  LARGE_CONTEXT,
   maxTokensForContext,
+  RANDOM_SEED,
+  TOP_K_OPTIONS,
 } from '../settings/settingsStore';
 
 type SettingsNav = NativeStackNavigationProp<RootStackParamList, 'Settings'>;
@@ -32,17 +38,47 @@ const SettingsScreen = () => {
     maxTokens,
     contextSize,
     topP,
+    topK,
+    minP,
     repeatPenalty,
+    seed,
+    stopSequences,
     systemPrompt,
     saveError,
     setTemperature,
     setMaxTokens,
     setContextSize,
     setTopP,
+    setTopK,
+    setMinP,
     setRepeatPenalty,
+    setSeed,
+    setStopSequences,
     setSystemPrompt,
   } = useSettings();
-  const tokenOptions = maxTokensForContext(contextSize);
+  const contextTrain = selectedModel?.contextTrain;
+  const contextOptions = contextOptionsForModel(contextTrain);
+  const activeContext = effectiveContextSize(contextSize, contextTrain);
+  const tokenOptions = maxTokensForContext(activeContext);
+  const [stopDraft, setStopDraft] = useState(() =>
+    formatStopSequences(stopSequences),
+  );
+  const [seedDraft, setSeedDraft] = useState(() =>
+    seed === RANDOM_SEED ? '' : String(seed),
+  );
+
+  useEffect(() => {
+    setStopDraft(formatStopSequences(stopSequences));
+  }, [stopSequences]);
+
+  useEffect(() => {
+    setSeedDraft(seed === RANDOM_SEED ? '' : String(seed));
+  }, [seed]);
+
+  const commitSeed = () => {
+    const parsed = Number.parseInt(seedDraft.trim(), 10);
+    setSeed(Number.isFinite(parsed) ? parsed : RANDOM_SEED);
+  };
 
   return (
     <View style={styles.flex}>
@@ -110,10 +146,13 @@ const SettingsScreen = () => {
             <Text style={styles.rowSubtitle}>
               How much of the conversation the model can read. Larger sizes use
               more memory, and response length stays within half of this.
+              {contextTrain
+                ? ` This model was trained on up to ${contextTrain} tokens.`
+                : ''}
             </Text>
             <View style={styles.chips}>
-              {CONTEXT_SIZE_OPTIONS.map(option => {
-                const selected = option === contextSize;
+              {contextOptions.map(option => {
+                const selected = option === activeContext;
 
                 return (
                   <Pressable
@@ -135,6 +174,12 @@ const SettingsScreen = () => {
                 );
               })}
             </View>
+            {activeContext > LARGE_CONTEXT ? (
+              <Text style={styles.warning}>
+                Contexts above {LARGE_CONTEXT} need several extra GB of RAM. If
+                the app closes while loading, pick a smaller size.
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.card}>
@@ -220,6 +265,103 @@ const SettingsScreen = () => {
             </View>
           </View>
 
+          <Text style={styles.section}>Sampling</Text>
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Top-k</Text>
+            <Text style={styles.rowSubtitle}>
+              Only consider this many of the most likely next tokens.
+            </Text>
+            <View style={styles.chips}>
+              {TOP_K_OPTIONS.map(option => {
+                const selected = option === topK;
+
+                return (
+                  <Pressable
+                    key={option}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    onPress={() => setTopK(option)}
+                    style={[styles.chip, selected && styles.chipSelected]}
+                  >
+                    <Text
+                      style={[
+                        styles.chipLabel,
+                        selected && styles.chipLabelSelected,
+                      ]}
+                    >
+                      {option === 0 ? 'Off' : option}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Min-p</Text>
+            <Text style={styles.rowSubtitle}>
+              Drops tokens far less likely than the top choice. 0 turns it off.
+            </Text>
+            <View style={styles.stepper}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Decrease min-p"
+                onPress={() => setMinP(minP - 0.05)}
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>−</Text>
+              </Pressable>
+              <Text style={styles.stepValue}>{minP.toFixed(2)}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Increase min-p"
+                onPress={() => setMinP(minP + 0.05)}
+                style={styles.stepButton}
+              >
+                <Text style={styles.stepLabel}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Seed</Text>
+            <Text style={styles.rowSubtitle}>
+              Leave empty for a different reply each time. A fixed number
+              repeats the same reply for the same chat and settings.
+            </Text>
+            <TextInput
+              value={seedDraft}
+              onChangeText={text => setSeedDraft(text.replace(/[^0-9]/g, ''))}
+              onEndEditing={commitSeed}
+              placeholder="Random"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="number-pad"
+              returnKeyType="done"
+              maxLength={10}
+              style={styles.singleInput}
+            />
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.rowTitle}>Stop sequences</Text>
+            <Text style={styles.rowSubtitle}>
+              One per line. The reply ends before any of these appears. Write
+              \n for a line break.
+            </Text>
+            <TextInput
+              value={stopDraft}
+              onChangeText={setStopDraft}
+              onEndEditing={() => setStopSequences(stopDraft)}
+              placeholder={'###\nUser:'}
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              multiline
+              style={styles.input}
+            />
+          </View>
+
+          <Text style={styles.section}>Instructions</Text>
           <View style={styles.card}>
             <Text style={styles.rowTitle}>System prompt</Text>
             <Text style={styles.rowSubtitle}>
@@ -283,6 +425,20 @@ const styles = StyleSheet.create({
   error: {
     ...typography.caption,
     color: colors.danger,
+  },
+  warning: {
+    ...typography.caption,
+    color: colors.danger,
+    lineHeight: 18,
+  },
+  singleInput: {
+    ...typography.body,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
   chevron: {
     color: colors.textMuted,

@@ -17,6 +17,38 @@ export function promptTokenBudget(contextSize: number, reservedTokens: number) {
   return Math.max(128, budget);
 }
 
+// The native module trims history with the model's real tokenizer. This only
+// bounds the payload, so it assumes about two characters per token and keeps
+// more history than the four-character estimate would.
+export function coarseHistoryBudget(
+  contextSize: number,
+  reservedTokens: number,
+) {
+  return promptTokenBudget(contextSize, reservedTokens) * 2;
+}
+
+export const TITLE_REQUEST =
+  'Write a title of at most six words for this conversation. Reply with the title only.';
+
+export function cleanGeneratedTitle(raw: string) {
+  const line =
+    raw
+      .split('\n')
+      .map(part => part.trim())
+      .find(Boolean) ?? '';
+  const title = line
+    .replace(/^(title|chat title)\s*[:\-–]\s*/i, '')
+    .replace(/^[#*_"'“”‘’`\s]+|[#*_"'“”‘’`\s.!?:;,]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (title.length < 2) {
+    return null;
+  }
+
+  return title.length <= 60 ? title : `${title.slice(0, 60).trimEnd()}…`;
+}
+
 export function titleFromMessages(messages: ChatMessage[]) {
   const firstUser = messages.find(
     message => message.role === 'user' && message.content.trim(),

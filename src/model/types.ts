@@ -1,12 +1,16 @@
 export type ModelSource = 'catalog' | 'url' | 'import';
 
-export type CatalogModel = {
+export type CatalogVariant = {
   id: string;
-  name: string;
-  description: string;
   quant: string;
   sizeBytes: number;
   url: string;
+};
+
+export type CatalogModel = CatalogVariant & {
+  name: string;
+  description: string;
+  variants: CatalogVariant[];
 };
 
 export type InstalledModel = {
@@ -17,6 +21,7 @@ export type InstalledModel = {
   source: ModelSource;
   origin?: string;
   downloadedAt: number;
+  contextTrain?: number;
 };
 
 export type Manifest = {

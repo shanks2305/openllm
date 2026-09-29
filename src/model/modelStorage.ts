@@ -6,6 +6,9 @@ import type { Manifest } from './types';
 type LlamaNative = {
   readFilePrefix?: (path: string, length: number) => Promise<string>;
   appendFile?: (source: string, dest: string) => Promise<boolean>;
+  readModelMetadata?: (
+    path: string,
+  ) => Promise<{ architecture: string; contextTrain: number }>;
 };
 
 const Llama = NativeModules.Llama as LlamaNative | undefined;
@@ -144,6 +147,21 @@ export async function assertGgufFile(path: string) {
 
   if (header !== GGUF_MAGIC) {
     throw new Error('That file is not a valid GGUF model');
+  }
+}
+
+export async function readTrainedContext(path: string) {
+  const llama = NativeModules.Llama as LlamaNative | undefined;
+
+  if (!llama?.readModelMetadata) {
+    return null;
+  }
+
+  try {
+    const { contextTrain } = await llama.readModelMetadata(path);
+    return contextTrain > 0 ? contextTrain : null;
+  } catch {
+    return null;
   }
 }
 

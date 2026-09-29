@@ -8,7 +8,14 @@ export type MarkdownSpan =
 export type MarkdownBlock =
   | { type: 'paragraph'; spans: MarkdownSpan[] }
   | { type: 'code'; language: string; value: string }
-  | { type: 'list'; ordered: boolean; items: MarkdownSpan[][] };
+  | { type: 'list'; ordered: boolean; items: MarkdownSpan[][] }
+  | { type: 'heading'; level: 1 | 2 | 3; spans: MarkdownSpan[] }
+  | { type: 'quote'; spans: MarkdownSpan[] }
+  | { type: 'rule' };
+
+const HEADING = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+const QUOTE = /^>\s?(.*)$/;
+const RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
 
 const INLINE =
   /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
@@ -104,6 +111,49 @@ function parseText(source: string): MarkdownBlock[] {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
+
+    if (RULE.test(line)) {
+      flushParagraph();
+      blocks.push({ type: 'rule' });
+      continue;
+    }
+
+    const heading = HEADING.exec(line);
+
+    if (heading) {
+      flushParagraph();
+      blocks.push({
+        type: 'heading',
+        level: Math.min(heading[1].length, 3) as 1 | 2 | 3,
+        spans: parseInline(heading[2]),
+      });
+      continue;
+    }
+
+    const quote = QUOTE.exec(line);
+
+    if (quote) {
+      flushParagraph();
+      const quoted = [quote[1].trim()];
+
+      while (index + 1 < lines.length) {
+        const next = QUOTE.exec(lines[index + 1]);
+
+        if (!next) {
+          break;
+        }
+
+        quoted.push(next[1].trim());
+        index += 1;
+      }
+
+      blocks.push({
+        type: 'quote',
+        spans: parseInline(quoted.filter(Boolean).join(' ')),
+      });
+      continue;
+    }
+
     const item = /^(?:[-*]|\d+\.)\s+(.+)$/.exec(line);
     const ordered = /^\d+\.\s+/.test(line);
 

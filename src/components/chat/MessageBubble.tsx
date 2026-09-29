@@ -2,11 +2,13 @@ import {
   Alert,
   Clipboard,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { colors, radii, spacing, typography } from '../../theme';
+import type { MessageStats } from '../../chat/types';
 import type { GenerationStats, Message } from '../../hooks/useChat';
 import { MarkdownBody } from './MarkdownBody';
 import { TypingIndicator } from './TypingIndicator';
@@ -32,7 +34,9 @@ export function MessageBubble({
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const showTyping = !isUser && isStreaming && message.content.length === 0;
-  const statsLabel = formatStats(isStreaming ? stats : null);
+  const statsLabel = isStreaming
+    ? formatStats(stats)
+    : formatSavedStats(message.stats);
 
   const openActions = () => {
     if (actionsDisabled || showTyping) {
@@ -48,6 +52,12 @@ export function MessageBubble({
         text: 'Copy',
         onPress: () => {
           Clipboard.setString(message.content);
+        },
+      },
+      {
+        text: 'Share',
+        onPress: () => {
+          Share.share({ message: message.content }).catch(() => undefined);
         },
       },
     ];
@@ -137,6 +147,16 @@ function formatStats(stats: GenerationStats | null) {
   }
 
   return parts.join(' · ');
+}
+
+function formatSavedStats(stats: MessageStats | undefined) {
+  if (!stats) {
+    return '';
+  }
+
+  const parts = [formatStats(stats), `${stats.tokens} tokens`];
+  parts.push(stats.gpu ? 'GPU' : 'CPU');
+  return parts.filter(Boolean).join(' · ');
 }
 
 const styles = StyleSheet.create({

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { matchChat } from '../../chat/search';
 import { colors, radii, spacing, typography } from '../../theme';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -21,6 +22,7 @@ export type SidebarChat = {
   id: string;
   title: string;
   modelName?: string;
+  messages: { content: string }[];
 };
 
 type ChatSidebarProps = {
@@ -33,6 +35,7 @@ type ChatSidebarProps = {
   onOpenChat: (id: string) => void;
   onDeleteChat: (id: string) => void;
   onRenameChat: (id: string, title: string) => void;
+  onShareChat: (id: string) => void;
   onOpenModels: () => void;
   onOpenSettings: () => void;
 };
@@ -47,6 +50,7 @@ export function ChatSidebar({
   onOpenChat,
   onDeleteChat,
   onRenameChat,
+  onShareChat,
   onOpenModels,
   onOpenSettings,
 }: ChatSidebarProps) {
@@ -56,10 +60,14 @@ export function ChatSidebar({
   const [query, setQuery] = useState('');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-  const trimmedQuery = query.trim().toLowerCase();
-  const visibleChats = trimmedQuery
-    ? chats.filter(chat => chat.title.toLowerCase().includes(trimmedQuery))
-    : chats;
+  const visibleChats = useMemo(
+    () =>
+      chats.flatMap(chat => {
+        const match = matchChat(chat, query);
+        return match ? [{ ...chat, snippet: match.snippet }] : [];
+      }),
+    [chats, query],
+  );
 
   useEffect(() => {
     if (!visible) {
@@ -155,7 +163,7 @@ export function ChatSidebar({
           <TextInput
             value={query}
             onChangeText={setQuery}
-            placeholder="Search chats"
+            placeholder="Search chats and messages"
             placeholderTextColor={colors.textMuted}
             autoCorrect={false}
             style={styles.search}
@@ -210,19 +218,23 @@ export function ChatSidebar({
                     key={chat.id}
                     accessibilityRole="button"
                     accessibilityLabel={chat.title}
-                    accessibilityHint="Long press to rename or delete"
+                    accessibilityHint="Long press to rename, share, or delete"
                     onPress={() => {
                       onOpenChat(chat.id);
                       dismiss();
                     }}
                     onLongPress={() => {
-                      Alert.alert(chat.title, 'Rename or delete this chat.', [
+                      Alert.alert(chat.title, undefined, [
                         {
                           text: 'Rename',
                           onPress: () => {
                             setRenamingId(chat.id);
                             setRenameValue(chat.title);
                           },
+                        },
+                        {
+                          text: 'Share',
+                          onPress: () => onShareChat(chat.id),
                         },
                         {
                           text: 'Delete',
@@ -241,6 +253,11 @@ export function ChatSidebar({
                     <Text style={styles.chatTitle} numberOfLines={1}>
                       {chat.title}
                     </Text>
+                    {chat.snippet ? (
+                      <Text style={styles.chatSnippet} numberOfLines={2}>
+                        {chat.snippet}
+                      </Text>
+                    ) : null}
                     {chat.modelName ? (
                       <Text style={styles.chatModel} numberOfLines={1}>
                         {chat.modelName}
@@ -383,6 +400,12 @@ const styles = StyleSheet.create({
   chatModel: {
     ...typography.caption,
     marginTop: 2,
+  },
+  chatSnippet: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 17,
   },
   chatList: {
     flex: 1,

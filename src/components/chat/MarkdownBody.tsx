@@ -3,11 +3,13 @@ import {
   Linking,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { colors, radii, spacing, typography } from '../../theme';
+import { highlightCode } from '../../chat/highlight';
 import { parseMarkdown, type MarkdownSpan } from '../../chat/markdown';
 
 type MarkdownBodyProps = {
@@ -41,11 +43,46 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                   <Text style={styles.copy}>Copy</Text>
                 </Pressable>
               </View>
-              <Text selectable style={styles.code}>
-                {block.value}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                <Text selectable style={styles.code}>
+                  {highlightCode(block.value, block.language).map(
+                    (token, tokenIndex) => (
+                      <Text key={tokenIndex} style={codeStyles[token.type]}>
+                        {token.text}
+                      </Text>
+                    ),
+                  )}
+                </Text>
+              </ScrollView>
+            </View>
+          );
+        }
+
+        if (block.type === 'heading') {
+          return (
+            <Text
+              key={`h-${index}`}
+              selectable
+              accessibilityRole="header"
+              style={[styles.body, headingStyles[block.level]]}
+            >
+              {renderSpans(block.spans)}
+            </Text>
+          );
+        }
+
+        if (block.type === 'quote') {
+          return (
+            <View key={`q-${index}`} style={styles.quote}>
+              <Text selectable style={[styles.body, styles.quoteText]}>
+                {renderSpans(block.spans)}
               </Text>
             </View>
           );
+        }
+
+        if (block.type === 'rule') {
+          return <View key={`hr-${index}`} style={styles.rule} />;
         }
 
         if (block.type === 'list') {
@@ -185,4 +222,31 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
+  quote: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accentMuted,
+    paddingLeft: spacing.sm,
+  },
+  quoteText: {
+    color: colors.textSecondary,
+  },
+  rule: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+    marginVertical: spacing.xs,
+  },
+});
+
+const headingStyles = StyleSheet.create({
+  1: { fontSize: 22, lineHeight: 28, fontWeight: '700' },
+  2: { fontSize: 19, lineHeight: 25, fontWeight: '700' },
+  3: { fontSize: 17, lineHeight: 23, fontWeight: '600' },
+});
+
+const codeStyles = StyleSheet.create({
+  plain: {},
+  keyword: { color: '#C4A7FF' },
+  string: { color: '#9FD89A' },
+  comment: { color: colors.textMuted, fontStyle: 'italic' },
+  number: { color: '#F5B97A' },
 });

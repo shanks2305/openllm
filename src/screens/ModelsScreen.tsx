@@ -24,7 +24,7 @@ import { colors, radii, spacing, typography } from '../theme';
 import { IconButton } from '../components/ui/IconButton';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { useModels } from '../hooks/useModels';
-import { getCatalogModel } from '../model/catalog';
+import { getCatalogModel, QUANT_NOTES } from '../model/catalog';
 import { formatBytes, getFreeBytes, storageNote } from '../model/modelStorage';
 import type { InstalledModel, ModelSource } from '../model/types';
 
@@ -60,6 +60,7 @@ const ModelsScreen = () => {
   const [addStep, setAddStep] = useState<AddStep | null>(null);
   const [url, setUrl] = useState('');
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
+  const [quantChoice, setQuantChoice] = useState<Record<string, string>>({});
   const {
     catalog,
     installed,
@@ -426,19 +427,64 @@ const ModelsScreen = () => {
                       ? ''
                       : ` ${formatBytes(freeBytes)} free on this device.`}
                   </Text>
-                  {catalog.map(model => {
+                  {catalog.map(family => {
+                    const model =
+                      family.variants.find(
+                        item => item.id === quantChoice[family.id],
+                      ) ?? family;
                     const installedModel = installed.find(
                       item => item.id === model.id,
                     );
                     const download = downloads[model.id];
 
                     return (
-                      <View key={model.id} style={styles.card}>
-                        <Text style={styles.cardTitle}>{model.name}</Text>
+                      <View key={family.id} style={styles.card}>
+                        <Text style={styles.cardTitle}>{family.name}</Text>
                         <Text style={styles.meta}>
                           {model.quant} · {formatBytes(model.sizeBytes)}
                         </Text>
-                        <Text style={styles.hint}>{model.description}</Text>
+                        <Text style={styles.hint}>{family.description}</Text>
+                        {family.variants.length > 1 ? (
+                          <>
+                            <View style={styles.quantRow}>
+                              {family.variants.map(variant => {
+                                const chosen = variant.id === model.id;
+                                const have = installed.some(
+                                  item => item.id === variant.id,
+                                );
+
+                                return (
+                                  <Pressable
+                                    key={variant.id}
+                                    accessibilityRole="button"
+                                    accessibilityState={{ selected: chosen }}
+                                    accessibilityLabel={`${variant.quant}, ${formatBytes(variant.sizeBytes)}`}
+                                    onPress={() =>
+                                      setQuantChoice(current => ({
+                                        ...current,
+                                        [family.id]: variant.id,
+                                      }))
+                                    }
+                                    style={[
+                                      styles.quantChip,
+                                      chosen && styles.quantChipSelected,
+                                    ]}
+                                  >
+                                    <Text style={styles.quantLabel}>
+                                      {variant.quant}
+                                      {have ? ' ✓' : ''}
+                                    </Text>
+                                  </Pressable>
+                                );
+                              })}
+                            </View>
+                            {QUANT_NOTES[model.quant] ? (
+                              <Text style={styles.hint}>
+                                {QUANT_NOTES[model.quant]}
+                              </Text>
+                            ) : null}
+                          </>
+                        ) : null}
                         {storageNote(model.sizeBytes) ? (
                           <Text style={styles.hint}>
                             {storageNote(model.sizeBytes)}
@@ -645,6 +691,28 @@ const styles = StyleSheet.create({
   },
   meta: {
     ...typography.caption,
+  },
+  quantRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  quantChip: {
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  quantChipSelected: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accentMuted,
+  },
+  quantLabel: {
+    ...typography.caption,
+    color: colors.text,
+    fontWeight: '600',
   },
   hint: {
     ...typography.caption,

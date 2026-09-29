@@ -5,6 +5,7 @@ import { fileExists } from '../model/modelStorage';
 import type {
   ChatTurn,
   GenerateOptions,
+  GenerateResult,
   LlamaEngine,
   LoadModelOptions,
 } from './LlamaEngine';
@@ -22,11 +23,8 @@ type LlamaNativeModule = {
   }>;
   generate: (
     prompt: string,
-    maxTokens: number,
-    temperature: number,
-    topP: number,
-    repeatPenalty: number,
-  ) => Promise<string>;
+    options: Required<Omit<GenerateOptions, 'contextSize'>>,
+  ) => Promise<GenerateResult>;
   stop: () => Promise<void>;
 };
 
@@ -84,7 +82,7 @@ export class NativeLlamaEngine implements LlamaEngine {
     messages: ChatTurn[],
     onToken: (token: string) => void,
     options?: GenerateOptions,
-  ): Promise<void> {
+  ): Promise<GenerateResult> {
     if (!Llama) {
       throw new Error('Llama native module is unavailable');
     }
@@ -113,21 +111,22 @@ export class NativeLlamaEngine implements LlamaEngine {
     );
 
     try {
-      const result = await Llama.generate(
-        payload,
-        options?.maxTokens ?? 256,
-        options?.temperature ?? 0.7,
-        options?.topP ?? 0.9,
-        options?.repeatPenalty ?? 1.1,
-      );
+      const result = await Llama.generate(payload, {
+        maxTokens: options?.maxTokens ?? 256,
+        temperature: options?.temperature ?? 0.7,
+        topP: options?.topP ?? 0.9,
+        topK: options?.topK ?? 0,
+        minP: options?.minP ?? 0.05,
+        repeatPenalty: options?.repeatPenalty ?? 1.1,
+        seed: options?.seed ?? -1,
+        stop: options?.stop ?? [],
+      });
 
-      if (
-        streamed.length === 0 &&
-        typeof result === 'string' &&
-        result.length > 0
-      ) {
-        onToken(result);
+      if (streamed.length === 0 && result.text.length > 0) {
+        onToken(result.text);
       }
+
+      return result;
     } finally {
       subscription.remove();
     }
