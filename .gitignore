@@ -2,6 +2,10 @@
 #
 .DS_Store
 
+# Debug symbols. dSYM bundles are not needed to build, and the simulator
+# llama.dSYM is over GitHub's 100 MB file limit.
+*.dSYM/
+
 # Xcode
 #
 build/
