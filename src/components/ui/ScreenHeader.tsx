@@ -18,7 +18,8 @@ export function ScreenHeader({ title, onBack, right }: ScreenHeaderProps) {
       <View style={styles.side}>
         {onBack ? (
           <IconButton
-            label="‹"
+            icon="chevronRight"
+            style={styles.back}
             accessibilityLabel="Go back"
             onPress={onBack}
           />
@@ -36,15 +37,16 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: spacing.md,
+    paddingHorizontal: spacing.sm,
     paddingBottom: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
     backgroundColor: colors.background,
   },
   side: {
-    width: 40,
+    width: 48,
     alignItems: 'flex-start',
+  },
+  back: {
+    transform: [{ scaleX: -1 }],
   },
   sideEnd: {
     alignItems: 'flex-end',

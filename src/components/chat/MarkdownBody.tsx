@@ -9,14 +9,83 @@ import {
   View,
 } from 'react-native';
 import { colors, radii, spacing, typography } from '../../theme';
+import { artifactKind, canOpenArtifact } from '../../chat/artifacts';
 import { highlightCode } from '../../chat/highlight';
-import { parseMarkdown, type MarkdownSpan } from '../../chat/markdown';
+import {
+  parseMarkdown,
+  type MarkdownBlock,
+  type MarkdownSpan,
+} from '../../chat/markdown';
 
 type MarkdownBodyProps = {
   content: string;
+  onOpenCode?: (code: string) => void;
 };
 
-export function MarkdownBody({ content }: MarkdownBodyProps) {
+type TableBlock = Extract<MarkdownBlock, { type: 'table' }>;
+
+function spanLength(spans: MarkdownSpan[]) {
+  return spans.reduce((total, span) => total + span.text.length, 0);
+}
+
+function columnWidths(block: TableBlock) {
+  return block.header.map((cell, column) => {
+    const longest = Math.max(
+      spanLength(cell),
+      ...block.rows.map(row => spanLength(row[column] ?? [])),
+    );
+    return Math.min(240, Math.max(72, longest * 8 + spacing.md));
+  });
+}
+
+function Table({ block }: { block: TableBlock }) {
+  const widths = columnWidths(block);
+  const align = (column: number) =>
+    block.align[column] === 'right'
+      ? styles.alignRight
+      : block.align[column] === 'center'
+      ? styles.alignCenter
+      : null;
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.tableScroll}
+    >
+      <View style={styles.table}>
+        <View style={[styles.tableRow, styles.tableHeader]}>
+          {block.header.map((cell, column) => (
+            <View key={column} style={[styles.cell, { width: widths[column] }]}>
+              <Text selectable style={[styles.cellText, styles.bold, align(column)]}>
+                {renderSpans(cell)}
+              </Text>
+            </View>
+          ))}
+        </View>
+        {block.rows.map((row, rowIndex) => (
+          <View
+            key={rowIndex}
+            style={[
+              styles.tableRow,
+              rowIndex === block.rows.length - 1 && styles.tableRowLast,
+            ]}
+          >
+            {row.map((cell, column) => (
+              <View key={column} style={[styles.cell, { width: widths[column] }]}>
+                <Text selectable style={[styles.cellText, align(column)]}>
+                  {renderSpans(cell)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
+export function MarkdownBody({ content, onOpenCode }: MarkdownBodyProps) {
   const blocks = parseMarkdown(content);
 
   if (blocks.length === 0) {
@@ -26,6 +95,25 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
   return (
     <View style={styles.stack}>
       {blocks.map((block, index) => {
+        if (block.type === 'table') {
+          return <Table key={`t-${index}`} block={block} />;
+        }
+
+        if (block.type === 'math') {
+          return (
+            <ScrollView
+              key={`m-${index}`}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.mathBlock}
+            >
+              <Text selectable style={styles.mathBlockText}>
+                {block.value}
+              </Text>
+            </ScrollView>
+          );
+        }
+
         if (block.type === 'code') {
           return (
             <View key={`code-${index}`} style={styles.codeBlock}>
@@ -33,17 +121,42 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
                 <Text style={styles.codeLanguage}>
                   {block.language || 'code'}
                 </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Copy code"
-                  onPress={() => {
-                    Clipboard.setString(block.value);
-                  }}
-                >
-                  <Text style={styles.copy}>Copy</Text>
-                </Pressable>
+                <View style={styles.codeActions}>
+                  {onOpenCode && canOpenArtifact(block.language, block.value) ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        artifactKind(block.language, block.value) === 'code'
+                          ? 'Open code in panel'
+                          : 'Preview'
+                      }
+                      hitSlop={6}
+                      onPress={() => onOpenCode(block.value)}
+                    >
+                      <Text style={styles.copy}>
+                        {artifactKind(block.language, block.value) === 'code'
+                          ? 'Open'
+                          : 'Preview'}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Copy code"
+                    hitSlop={6}
+                    onPress={() => {
+                      Clipboard.setString(block.value);
+                    }}
+                  >
+                    <Text style={styles.copy}>Copy</Text>
+                  </Pressable>
+                </View>
               </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.codeScroll}
+              >
                 <Text selectable style={styles.code}>
                   {highlightCode(block.value, block.language).map(
                     (token, tokenIndex) => (
@@ -89,9 +202,18 @@ export function MarkdownBody({ content }: MarkdownBodyProps) {
           return (
             <View key={`list-${index}`} style={styles.list}>
               {block.items.map((item, itemIndex) => (
-                <View key={itemIndex} style={styles.listRow}>
+                <View
+                  key={itemIndex}
+                  style={[
+                    styles.listRow,
+                    {
+                      marginLeft: (block.depths?.[itemIndex] ?? 0) * spacing.md,
+                    },
+                  ]}
+                >
                   <Text style={styles.marker}>
-                    {block.ordered ? `${itemIndex + 1}.` : '•'}
+                    {block.markers?.[itemIndex] ??
+                      (block.ordered ? `${itemIndex + 1}.` : '•')}
                   </Text>
                   <Text selectable style={styles.body}>
                     {renderSpans(item)}
@@ -130,6 +252,22 @@ function renderSpans(spans: MarkdownSpan[]) {
       );
     }
 
+    if (span.type === 'strike') {
+      return (
+        <Text key={index} style={styles.strike}>
+          {span.text}
+        </Text>
+      );
+    }
+
+    if (span.type === 'math') {
+      return (
+        <Text key={index} style={styles.math}>
+          {span.text}
+        </Text>
+      );
+    }
+
     if (span.type === 'code') {
       return (
         <Text key={index} style={styles.inlineCode}>
@@ -158,12 +296,12 @@ function renderSpans(spans: MarkdownSpan[]) {
 
 const styles = StyleSheet.create({
   stack: {
-    gap: spacing.sm,
+    gap: spacing.sm + 4,
   },
   body: {
     ...typography.body,
     flex: 1,
-    lineHeight: 22,
+    lineHeight: 25,
   },
   bold: {
     fontWeight: '700',
@@ -171,8 +309,66 @@ const styles = StyleSheet.create({
   italic: {
     fontStyle: 'italic',
   },
+  strike: {
+    textDecorationLine: 'line-through',
+    color: colors.textSecondary,
+  },
+  math: {
+    fontFamily: Platform.select({ ios: 'Times New Roman', default: 'serif' }),
+    fontStyle: 'italic',
+    fontSize: 17,
+  },
+  mathBlock: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: spacing.xs,
+  },
+  mathBlockText: {
+    fontFamily: Platform.select({ ios: 'Times New Roman', default: 'serif' }),
+    fontStyle: 'italic',
+    fontSize: 19,
+    lineHeight: 28,
+    color: colors.text,
+    textAlign: 'center',
+  },
+  tableScroll: {
+    flexGrow: 0,
+  },
+  table: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: radii.sm,
+    overflow: 'hidden',
+  },
+  tableHeader: {
+    backgroundColor: colors.surface,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  tableRowLast: {
+    borderBottomWidth: 0,
+  },
+  cell: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs + 2,
+  },
+  cellText: {
+    ...typography.body,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  alignRight: {
+    textAlign: 'right',
+  },
+  alignCenter: {
+    textAlign: 'center',
+  },
   inlineCode: {
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+    fontSize: 14,
     backgroundColor: colors.surfaceElevated,
     color: colors.text,
   },
@@ -190,42 +386,54 @@ const styles = StyleSheet.create({
   },
   marker: {
     ...typography.body,
-    lineHeight: 22,
+    lineHeight: 25,
     color: colors.textSecondary,
     minWidth: 18,
   },
   codeBlock: {
-    backgroundColor: colors.surfaceElevated,
+    backgroundColor: colors.codeBackground,
     borderRadius: radii.md,
-    borderWidth: 1,
+    borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
-    padding: spacing.sm,
-    gap: spacing.xs,
+    overflow: 'hidden',
   },
   codeHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md - 4,
+    paddingVertical: spacing.xs + 2,
+  },
+  codeActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
   },
   codeLanguage: {
     ...typography.caption,
-    color: colors.textMuted,
+    fontSize: 12,
+    color: colors.textSecondary,
   },
   copy: {
     ...typography.caption,
-    color: colors.accent,
-    fontWeight: '600',
+    fontSize: 12,
+    color: colors.textSecondary,
+    fontWeight: '500',
+  },
+  codeScroll: {
+    padding: spacing.md - 4,
   },
   code: {
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
     color: colors.text,
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   quote: {
     borderLeftWidth: 3,
-    borderLeftColor: colors.accentMuted,
-    paddingLeft: spacing.sm,
+    borderLeftColor: colors.border,
+    paddingLeft: spacing.sm + 4,
   },
   quoteText: {
     color: colors.textSecondary,
@@ -243,7 +451,7 @@ const headingStyles = StyleSheet.create({
   3: { fontSize: 17, lineHeight: 23, fontWeight: '600' },
 });
 
-const codeStyles = StyleSheet.create({
+export const codeStyles = StyleSheet.create({
   plain: {},
   keyword: { color: '#C4A7FF' },
   string: { color: '#9FD89A' },

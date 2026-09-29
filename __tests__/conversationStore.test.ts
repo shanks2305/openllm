@@ -160,6 +160,82 @@ describe('ConversationStore', () => {
     expect(broken.stats).toBeUndefined();
   });
 
+  it('pins, archives, and groups chats into projects', async () => {
+    const store = new ConversationStore();
+    const chat = store.startNew();
+    store.setMessages(chat.id, [{ id: '1', role: 'user', content: 'hi' }]);
+    const project = store.createProject('  Trip   plans ')!;
+
+    store.moveToProject(chat.id, project.id);
+    store.setPinned(chat.id, true);
+    expect(store.getState().conversations[0]).toMatchObject({
+      pinned: true,
+      projectId: project.id,
+    });
+    expect(store.getState().projects[0].name).toBe('Trip plans');
+
+    store.setArchived(chat.id, true);
+    expect(store.getState().conversations[0].pinned).toBeUndefined();
+    expect(store.getState().activeId).toBeNull();
+
+    store.removeProject(project.id);
+    expect(store.getState().conversations[0].projectId).toBeUndefined();
+    await store.flush();
+  });
+
+  it('drops a project id that no longer exists when hydrating', async () => {
+    exists.mockResolvedValue(true);
+    readFile.mockResolvedValue(
+      JSON.stringify({
+        activeId: 'c',
+        projects: [{ id: 'p', name: 'Work', createdAt: 1 }, { id: 'bad' }],
+        conversations: [
+          {
+            id: 'c',
+            title: 'T',
+            projectId: 'gone',
+            messages: [{ id: 'u', role: 'user', content: 'hi' }],
+          },
+          {
+            id: 'd',
+            title: 'D',
+            projectId: 'p',
+            archived: true,
+            messages: [{ id: 'u', role: 'user', content: 'hi' }],
+          },
+        ],
+      }),
+    );
+
+    const store = new ConversationStore();
+    await store.hydrate();
+    const state = store.getState();
+    const byId = Object.fromEntries(
+      state.conversations.map(chat => [chat.id, chat]),
+    );
+
+    expect(state.projects).toEqual([{ id: 'p', name: 'Work', createdAt: 1 }]);
+    expect(byId.c.projectId).toBeUndefined();
+    expect(byId.d).toMatchObject({ projectId: 'p', archived: true });
+  });
+
+  it('switches between saved versions of a reply', () => {
+    const store = new ConversationStore();
+    const chat = store.startNew();
+    store.setMessages(chat.id, [
+      { id: 'u', role: 'user', content: 'hi' },
+      { id: 'a', role: 'assistant', content: 'first' },
+    ]);
+    store.beginBranch(chat.id, 1);
+    store.setMessages(chat.id, [
+      { id: 'u', role: 'user', content: 'hi' },
+      { id: 'b', role: 'assistant', content: 'second' },
+    ]);
+    store.switchBranch(chat.id, 1, 0);
+
+    expect(store.getActive()?.messages[1].content).toBe('first');
+  });
+
   it('reports a save failure', async () => {
     writeFile.mockRejectedValue(new Error('full'));
     const store = new ConversationStore();

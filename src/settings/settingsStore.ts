@@ -11,6 +11,8 @@ export type AppSettings = {
   repeatPenalty: number;
   seed: number;
   stopSequences: string[];
+  tools: boolean;
+  thinking: boolean;
 };
 
 type Listener = () => void;
@@ -35,6 +37,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   repeatPenalty: 1.1,
   seed: RANDOM_SEED,
   stopSequences: [],
+  tools: false,
+  thinking: true,
 };
 
 export function maxTokensForContext(contextSize: number): number[] {
@@ -180,6 +184,8 @@ function normalizeSettings(value: Partial<AppSettings>): AppSettings {
       typeof value.seed === 'number' ? value.seed : DEFAULT_SETTINGS.seed,
     ),
     stopSequences: normalizeStops(value.stopSequences),
+    tools: value.tools === true,
+    thinking: value.thinking !== false,
   };
 }
 
@@ -292,6 +298,16 @@ class SettingsStore {
       ...this.settings,
       stopSequences: parseStopSequences(text),
     };
+    this.persist();
+  };
+
+  setTools = (value: boolean) => {
+    this.settings = { ...this.settings, tools: value };
+    this.persist();
+  };
+
+  setThinking = (value: boolean) => {
+    this.settings = { ...this.settings, thinking: value };
     this.persist();
   };
 

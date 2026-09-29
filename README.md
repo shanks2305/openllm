@@ -29,15 +29,35 @@ Most recommended models offer several quantizations (for example Q4_K_M, Q5_K_M,
 
 When a model is added, the app reads its trained context length from the GGUF header and stores it in the manifest.
 
+The catalog marks Qwen3 models as Reasoning, and SmolVLM2 and Qwen2.5-VL as Vision. A vision model needs a second GGUF, the mmproj projector, which downloads automatically after the weights and is stored as `models/<id>.mmproj.gguf`. If that second download fails, the model card shows Get vision to retry. For an imported model, Add vision lets you pick its matching mmproj file. Deleting a model deletes its projector too.
+
 ## Chat
 
-The sidebar lists saved conversations. Search matches chat titles and message text, and shows a snippet for message matches. Long-press a chat to rename, share, or delete it. Each chat remembers the model that produced it and can keep its own instructions (General, Concise, Code, or custom). Those instructions replace the system prompt from Settings for that chat only.
+The sidebar lists saved conversations. Search matches chat titles and message text, and shows a snippet for message matches. Long-press a chat to pin, archive, move it to a project, rename, share, or delete it. Pinned chats sit at the top, and archived chats are hidden until you open Archived at the bottom of the list. Each chat remembers the model that produced it and can keep its own instructions (General, Concise, Code, or custom).
+
+Projects group chats. Tap + next to Projects to make one, and long-press a project to start a chat in it, rename it, set its instructions, or delete it. Deleting a project keeps its chats. Instructions apply in this order: the chat's own, then the project's, then the system prompt from Settings.
+
+Memory holds facts the model should know in every chat. Add them in Memory (sidebar or Settings), long-press your own message and choose Remember, or turn on Tools and ask the model to remember something. Memory can be switched off without deleting it.
 
 After the first reply, the model writes a short title for the chat. A title you set yourself is never replaced. Clearing it goes back to the first message.
 
-Long-press a message to copy or share it. Long-press your own message to edit and resend from that point. Long-press a reply to regenerate it. The share button in the header exports the whole chat as Markdown.
+Long-press a message to copy or share it. Editing your own message or regenerating a reply keeps the old version. Use the ‹ 1/2 › arrows under the message to switch between versions. The share button in the header exports the whole chat as Markdown.
 
-Assistant replies render headings, quotes, rules, bold, italics, lists, links, and fenced code. Code blocks scroll sideways, highlight keywords, strings, numbers, and comments, and have a copy button.
+Assistant replies render headings, quotes, rules, bold, italics, strikethrough, nested and task lists, links, tables, and fenced code. LaTeX in `$…$`, `\(…\)`, `$$…$$`, and `\[…\]` is shown as Unicode math, for example `\frac{a}{b}` as a/b and `x^2` as x². Code blocks scroll sideways, highlight keywords, strings, numbers, and comments, and have a copy button.
+
+HTML, SVG, and code blocks of three lines or more also get Preview or Open, which shows them in a full-screen panel. The panel pages through every artifact in the chat. HTML and SVG run in an offline sandbox: a Content Security Policy and a navigation filter stop the page from loading anything over the network.
+
+### Attachments and voice
+
+The + button in the composer attaches up to four photos or files. Files can be PDFs, text, source code, or images. The PDF text layer is extracted on device, so scanned PDFs without selectable text are rejected. Document text goes into the prompt inside `<document>` tags. When several documents don't fit the context, the newest keep the most text and older ones are shortened or left out with a note. Photos are re-encoded to JPEG at 1024 px or less and saved in `attachments/`. Only a vision model reads them; other models are told an image was attached.
+
+The mic button dictates with on-device speech recognition, and the speaker button on a reply reads it aloud. Code blocks and Markdown symbols are skipped when reading.
+
+### Tools and reasoning
+
+The Tools chip lets the model call a calculator, the current date and time, unit conversion, chat search, and memory. Calls use the `<tool_call>` format that Qwen models are trained on, run locally, and show as chips above the reply. A reply can make up to three calls.
+
+For reasoning models, the model's thinking appears in a collapsed "Thought for N words" block above the answer, and it is left out of later prompts. On Qwen3 the Think chip turns thinking on or off; off sends `/no_think`. While thinking is on, the response length is raised to at least 1536 tokens so the answer isn't cut off.
 
 While a reply is streaming, the bubble shows time to first token and tokens per second. Finished replies keep those numbers along with the token count and whether the GPU or CPU produced them. Send and stop give a light haptic tap.
 
@@ -53,4 +73,6 @@ History is trimmed natively with the model's own tokenizer and chat template. Th
 
 Stop sequences are entered one per line, with `\n` for a line break. Text is held back while it could still become a stop sequence, so the stop string never appears in the reply. A fixed seed makes replies repeatable for the same chat and settings. Leave it empty for random output.
 
-All sampling runs in the iOS Llama module. Rebuild the iOS app after pulling changes that touch `ios/LlamaModule.mm`.
+A prompt with images is tokenized with mtmd and fully evaluated, so it doesn't reuse the KV cache. Every message in a chat that contains a photo re-encodes that photo.
+
+All sampling runs in the iOS Llama module. PDF text, image preparation, the photo picker, speech, and dictation live in `ios/MediaModule.mm`. Rebuild the iOS app, after `bundle exec pod install`, when you pull changes that touch either file or add a native dependency.

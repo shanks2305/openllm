@@ -35,5 +35,7 @@ export function useSettings() {
     setSeed: settingsStore.setSeed,
     setStopSequences: settingsStore.setStopSequences,
     setSystemPrompt: settingsStore.setSystemPrompt,
+    setTools: settingsStore.setTools,
+    setThinking: settingsStore.setThinking,
   };
 }

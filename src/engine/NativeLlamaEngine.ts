@@ -21,6 +21,8 @@ type LlamaNativeModule = {
     batchSize: number;
     microBatchSize: number;
   }>;
+  loadProjector?: (path: string) => Promise<{ vision: boolean }>;
+  unloadProjector?: () => Promise<void>;
   generate: (
     prompt: string,
     options: Required<Omit<GenerateOptions, 'contextSize'>>,
@@ -33,24 +35,32 @@ const Llama = NativeModules.Llama as LlamaNativeModule | undefined;
 export class NativeLlamaEngine implements LlamaEngine {
   private loadedPath: string | null = null;
   private loadedContext = 0;
+  private loadedProjector: string | null = null;
+  private projectorError: string | null = null;
   private loadPromise: Promise<void> | null = null;
 
   async loadModel(options?: LoadModelOptions): Promise<void> {
     const path = await modelManager.getActivePath();
+    const projector = await modelManager.getActiveProjectorPath();
     const contextSize = options?.contextSize ?? 4096;
 
     if (!path) {
       throw new Error('No model selected. Add one in Settings → Models.');
     }
 
-    if (this.loadedPath === path && this.loadedContext === contextSize) {
+    const isLoaded = () =>
+      this.loadedPath === path &&
+      this.loadedContext === contextSize &&
+      this.loadedProjector === projector;
+
+    if (isLoaded()) {
       return;
     }
 
     if (this.loadPromise) {
       await this.loadPromise;
 
-      if (this.loadedPath === path && this.loadedContext === contextSize) {
+      if (isLoaded()) {
         return;
       }
     }
@@ -60,15 +70,20 @@ export class NativeLlamaEngine implements LlamaEngine {
         throw new Error('Llama native module is unavailable');
       }
 
-      if (!(await fileExists(path))) {
-        throw new Error(`Model does not exist: ${path}`);
+      if (this.loadedPath !== path || this.loadedContext !== contextSize) {
+        if (!(await fileExists(path))) {
+          throw new Error(`Model does not exist: ${path}`);
+        }
+
+        this.loadedPath = null;
+        this.loadedContext = 0;
+        this.loadedProjector = null;
+        await Llama.loadModel(path, contextSize, 512, 512);
+        this.loadedPath = path;
+        this.loadedContext = contextSize;
       }
 
-      this.loadedPath = null;
-      this.loadedContext = 0;
-      await Llama.loadModel(path, contextSize, 512, 512);
-      this.loadedPath = path;
-      this.loadedContext = contextSize;
+      await this.syncProjector(projector);
     })();
 
     try {
@@ -76,6 +91,37 @@ export class NativeLlamaEngine implements LlamaEngine {
     } finally {
       this.loadPromise = null;
     }
+  }
+
+  // A broken projector should not stop text chat, so the failure is kept and
+  // only reported when a message actually carries an image.
+  private async syncProjector(projector: string | null) {
+    this.projectorError = null;
+
+    if (!Llama?.loadProjector || !Llama.unloadProjector) {
+      this.loadedProjector = projector;
+      this.projectorError = projector
+        ? 'This build does not include image support'
+        : null;
+      return;
+    }
+
+    if (!projector) {
+      if (this.loadedProjector) {
+        await Llama.unloadProjector();
+      }
+      this.loadedProjector = null;
+      return;
+    }
+
+    try {
+      await Llama.loadProjector(projector);
+    } catch (error) {
+      this.projectorError =
+        error instanceof Error ? error.message : 'Vision encoder failed to load';
+    }
+
+    this.loadedProjector = projector;
   }
 
   async generate(
@@ -89,12 +135,19 @@ export class NativeLlamaEngine implements LlamaEngine {
 
     await this.loadModel({ contextSize: options?.contextSize });
 
+    const hasImages = messages.some(message => message.images?.length);
+
+    if (hasImages && this.projectorError) {
+      throw new Error(`Can't read images: ${this.projectorError}`);
+    }
+
     const payload = JSON.stringify(
       messages
         .filter(message => message.content.trim().length > 0)
         .map(message => ({
           role: message.role,
           content: message.content,
+          ...(message.images?.length ? { images: message.images } : {}),
         })),
     );
 

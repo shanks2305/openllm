@@ -1,4 +1,6 @@
 import type { ChatTurn } from '../engine/LlamaEngine';
+import { documentAllowances, renderDocument } from './documents';
+import { stripReasoning } from './reasoning';
 import type { ChatMessage } from './types';
 
 const CHARS_PER_TOKEN = 4;
@@ -25,6 +27,39 @@ export function coarseHistoryBudget(
   reservedTokens: number,
 ) {
   return promptTokenBudget(contextSize, reservedTokens) * 2;
+}
+
+export type SystemPromptParts = {
+  chat?: string;
+  project?: string;
+  global?: string;
+  memory?: string[];
+  tools?: string;
+};
+
+// The most specific instructions win: chat, then project, then Settings.
+// Memory and tool descriptions are added after whichever one applies.
+export function buildSystemPrompt(parts: SystemPromptParts) {
+  const base =
+    [parts.chat, parts.project, parts.global]
+      .map(value => value?.trim() ?? '')
+      .find(Boolean) ?? '';
+  const sections = [base];
+  const memory = (parts.memory ?? []).map(item => item.trim()).filter(Boolean);
+
+  if (memory.length > 0) {
+    sections.push(
+      `Things the user asked you to remember:\n${memory
+        .map(item => `- ${item}`)
+        .join('\n')}`,
+    );
+  }
+
+  if (parts.tools?.trim()) {
+    sections.push(parts.tools.trim());
+  }
+
+  return sections.filter(Boolean).join('\n\n');
 }
 
 export const TITLE_REQUEST =
@@ -67,26 +102,63 @@ export function titleFromMessages(messages: ChatMessage[]) {
   return `${line.slice(0, 42).trimEnd()}…`;
 }
 
+export type TurnOptions = {
+  documentChars?: number;
+  vision?: boolean;
+};
+
 export function messagesToTurns(
   messages: ChatMessage[],
   systemPrompt: string,
   maxTokens = DEFAULT_CONTEXT_TOKENS,
+  options: TurnOptions = {},
 ): ChatTurn[] {
   const turns: ChatTurn[] = [];
   const system = systemPrompt.trim();
+  const allowances = documentAllowances(
+    messages,
+    options.documentChars ?? Number.MAX_SAFE_INTEGER,
+  );
 
   if (system) {
     turns.push({ role: 'system', content: system });
   }
 
   for (const message of messages) {
-    const content = message.content.trim();
+    const text =
+      message.role === 'assistant'
+        ? stripReasoning(message.content)
+        : message.content;
+    const attachments = message.attachments ?? [];
+    const documents = attachments.flatMap(item =>
+      item.kind === 'document'
+        ? [renderDocument(item, allowances.get(item.id) ?? 0)]
+        : [],
+    );
+    const images = attachments.flatMap(item =>
+      item.kind === 'image' ? [item] : [],
+    );
+    const imageNotes =
+      images.length > 0 && !options.vision
+        ? [
+            `[The user attached ${images.length === 1 ? 'an image' : `${images.length} images`}, but the current model cannot see images.]`,
+          ]
+        : [];
+    const content = [...documents, ...imageNotes, text.trim() ? text : '']
+      .filter(Boolean)
+      .join('\n\n');
 
-    if (!content) {
+    if (!content.trim() && !(options.vision && images.length > 0)) {
       continue;
     }
 
-    turns.push({ role: message.role, content: message.content });
+    turns.push({
+      role: message.role,
+      content,
+      ...(options.vision && images.length > 0
+        ? { images: images.map(image => image.path) }
+        : {}),
+    });
   }
 
   return fitContext(turns, maxTokens);

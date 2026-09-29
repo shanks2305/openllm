@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -11,89 +10,60 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, radii, spacing, typography } from '../../theme';
 import { formatBytes } from '../../model/modelStorage';
 import type { InstalledModel } from '../../model/types';
+import { Icon } from '../ui/Icon';
 
 type ModelPickerProps = {
+  visible: boolean;
   models: InstalledModel[];
   selectedId: string | null;
-  disabled?: boolean;
+  onClose: () => void;
   onSelect: (id: string) => void;
   onManageModels: () => void;
 };
 
 export function ModelPicker({
+  visible,
   models,
   selectedId,
-  disabled,
+  onClose,
   onSelect,
   onManageModels,
 }: ModelPickerProps) {
   const insets = useSafeAreaInsets();
-  const [open, setOpen] = useState(false);
-  const selected = models.find(model => model.id === selectedId);
-  const label = selected?.name ?? 'Choose a model';
-
-  const close = () => setOpen(false);
 
   return (
-    <>
-      <View style={styles.wrap}>
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <View style={styles.overlay}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Change model"
-          disabled={disabled}
-          onPress={() => setOpen(true)}
-          style={({ pressed }) => [
-            styles.box,
-            { opacity: disabled ? 0.5 : pressed ? 0.8 : 1 },
-          ]}>
-          <View style={styles.boxText}>
-            <Text style={styles.caption}>Model</Text>
-            <Text style={styles.name} numberOfLines={1}>
-              {label}
-            </Text>
-          </View>
-          <Text style={styles.chevron}>▾</Text>
-        </Pressable>
-      </View>
-
-      <Modal
-        visible={open}
-        animationType="slide"
-        transparent
-        onRequestClose={close}>
-        <View style={styles.overlay}>
-          <Pressable style={styles.dismiss} onPress={close} />
-          <View
-            style={[
-              styles.sheet,
-              { paddingBottom: insets.bottom + spacing.md },
-            ]}>
-            <View style={styles.handle} />
-            <Text style={styles.sheetTitle}>Downloaded models</Text>
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.sheetContent}>
-              {models.length === 0 ? (
-                <View style={styles.empty}>
-                  <Text style={styles.emptyTitle}>No models downloaded</Text>
-                  <Text style={styles.hint}>
-                    Download or import a .gguf file first, then pick it here.
-                  </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => {
-                      close();
-                      onManageModels();
-                    }}
-                    style={({ pressed }) => [
-                      styles.manageButton,
-                      { opacity: pressed ? 0.8 : 1 },
-                    ]}>
-                    <Text style={styles.manageLabel}>Manage models</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                models.map(model => {
+          accessibilityLabel="Close model picker"
+          style={styles.dismiss}
+          onPress={onClose}
+        />
+        <View
+          style={[styles.sheet, { paddingBottom: insets.bottom + spacing.md }]}
+        >
+          <View style={styles.handle} />
+          <Text style={styles.sheetTitle}>Model</Text>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.sheetContent}
+          >
+            {models.length === 0 ? (
+              <View style={styles.empty}>
+                <Text style={styles.emptyTitle}>No models downloaded</Text>
+                <Text style={styles.hint}>
+                  Download or import a .gguf file first, then pick it here.
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.group}>
+                {models.map((model, index) => {
                   const isSelected = model.id === selectedId;
 
                   return (
@@ -103,82 +73,65 @@ export function ModelPicker({
                       accessibilityState={{ selected: isSelected }}
                       onPress={() => {
                         onSelect(model.id);
-                        close();
+                        onClose();
                       }}
                       style={({ pressed }) => [
                         styles.row,
-                        isSelected && styles.rowSelected,
-                        { opacity: pressed ? 0.8 : 1 },
-                      ]}>
+                        index > 0 && styles.rowDivider,
+                        pressed && styles.rowPressed,
+                      ]}
+                    >
                       <View style={styles.rowText}>
                         <Text style={styles.rowTitle} numberOfLines={1}>
                           {model.name}
                         </Text>
-                        <Text style={styles.hint}>{formatBytes(model.bytes)}</Text>
+                        <Text style={styles.hint}>
+                          {formatBytes(model.bytes)} · on-device
+                        </Text>
                       </View>
                       {isSelected ? (
-                        <Text style={styles.check}>✓</Text>
+                        <Icon name="check" size={18} color={colors.text} />
                       ) : null}
                     </Pressable>
                   );
-                })
-              )}
-            </ScrollView>
-          </View>
+                })}
+              </View>
+            )}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                onClose();
+                onManageModels();
+              }}
+              style={({ pressed }) => [
+                styles.manage,
+                pressed && styles.rowPressed,
+              ]}
+            >
+              <Icon name="models" size={18} color={colors.textSecondary} />
+              <Text style={styles.manageLabel}>Manage models</Text>
+              <Icon name="chevronRight" size={14} color={colors.textMuted} />
+            </Pressable>
+          </ScrollView>
         </View>
-      </Modal>
-    </>
+      </View>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-  },
-  box: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    minHeight: 48,
-  },
-  boxText: {
-    flex: 1,
-    marginRight: spacing.sm,
-  },
-  caption: {
-    ...typography.caption,
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    fontSize: 11,
-  },
-  name: {
-    ...typography.body,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  chevron: {
-    color: colors.textMuted,
-    fontSize: 16,
-  },
   overlay: {
     flex: 1,
     justifyContent: 'flex-end',
-    backgroundColor: 'rgba(0,0,0,0.55)',
+    backgroundColor: 'rgba(0,0,0,0.5)',
   },
   dismiss: {
     flex: 1,
   },
   sheet: {
     backgroundColor: colors.surface,
-    borderTopLeftRadius: radii.lg,
-    borderTopRightRadius: radii.lg,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
     paddingHorizontal: spacing.md,
     paddingTop: spacing.sm,
     maxHeight: '70%',
@@ -186,26 +139,32 @@ const styles = StyleSheet.create({
   handle: {
     alignSelf: 'center',
     width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: colors.surfacePressed,
     marginBottom: spacing.md,
   },
   sheetTitle: {
     ...typography.body,
+    fontSize: 17,
     fontWeight: '600',
     textAlign: 'center',
     marginBottom: spacing.md,
   },
   sheetContent: {
-    gap: spacing.sm,
+    gap: spacing.sm + 4,
     paddingBottom: spacing.sm,
+  },
+  group: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radii.lg,
+    overflow: 'hidden',
   },
   empty: {
     backgroundColor: colors.surfaceElevated,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     padding: spacing.md,
-    gap: spacing.sm,
+    gap: spacing.xs,
   },
   emptyTitle: {
     ...typography.body,
@@ -215,27 +174,18 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.textMuted,
   },
-  manageButton: {
-    alignSelf: 'flex-start',
-    marginTop: spacing.xs,
-  },
-  manageLabel: {
-    ...typography.body,
-    color: colors.accent,
-    fontWeight: '600',
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.surfaceElevated,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.md,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm + 2,
+    paddingVertical: spacing.sm + 4,
   },
-  rowSelected: {
-    borderColor: colors.accent,
+  rowDivider: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  rowPressed: {
+    backgroundColor: colors.surfacePressed,
   },
   rowText: {
     flex: 1,
@@ -244,11 +194,19 @@ const styles = StyleSheet.create({
   },
   rowTitle: {
     ...typography.body,
-    fontWeight: '600',
+    fontWeight: '500',
   },
-  check: {
-    color: colors.accent,
-    fontSize: 16,
-    fontWeight: '700',
+  manage: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm + 4,
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radii.lg,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 6,
+  },
+  manageLabel: {
+    ...typography.body,
+    flex: 1,
   },
 });

@@ -5,10 +5,12 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import { THINKING_MIN_TOKENS } from '../chat/generation';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -44,6 +46,10 @@ const SettingsScreen = () => {
     seed,
     stopSequences,
     systemPrompt,
+    tools,
+    thinking,
+    setTools,
+    setThinking,
     saveError,
     setTemperature,
     setMaxTokens,
@@ -112,6 +118,57 @@ const SettingsScreen = () => {
             </View>
             <Text style={styles.chevron}>›</Text>
           </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open memory"
+            onPress={() => navigation.navigate('Memory')}
+            style={({ pressed }) => [
+              styles.row,
+              { opacity: pressed ? 0.75 : 1 },
+            ]}
+          >
+            <View style={styles.rowText}>
+              <Text style={styles.rowTitle}>Memory</Text>
+              <Text style={styles.rowSubtitle} numberOfLines={1}>
+                Facts the model remembers in every chat
+              </Text>
+            </View>
+            <Text style={styles.chevron}>›</Text>
+          </Pressable>
+
+          <Text style={styles.section}>Abilities</Text>
+          <View style={[styles.card, styles.switchCard]}>
+            <View style={styles.rowText}>
+              <Text style={styles.rowTitle}>Tools</Text>
+              <Text style={styles.rowSubtitle}>
+                Lets the model use a calculator, the date and time, unit
+                conversion, chat search, and memory. Works best with Qwen
+                models.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Tools"
+              value={tools}
+              onValueChange={setTools}
+              trackColor={{ true: colors.accent, false: colors.surfacePressed }}
+            />
+          </View>
+          <View style={[styles.card, styles.switchCard]}>
+            <View style={styles.rowText}>
+              <Text style={styles.rowTitle}>Think before answering</Text>
+              <Text style={styles.rowSubtitle}>
+                Reasoning models such as Qwen3 work through the problem first.
+                Slower, but better at math and logic. Replies get at least{' '}
+                {THINKING_MIN_TOKENS} tokens while this is on.
+              </Text>
+            </View>
+            <Switch
+              accessibilityLabel="Think before answering"
+              value={thinking}
+              onValueChange={setThinking}
+              trackColor={{ true: colors.accent, false: colors.surfacePressed }}
+            />
+          </View>
 
           <Text style={styles.section}>Generation</Text>
           {saveError ? <Text style={styles.error}>{saveError}</Text> : null}
@@ -390,6 +447,11 @@ const styles = StyleSheet.create({
   body: {
     padding: spacing.md,
     gap: spacing.sm,
+  },
+  switchCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
   },
   section: {
     ...typography.caption,

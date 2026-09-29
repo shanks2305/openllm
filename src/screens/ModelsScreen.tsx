@@ -24,9 +24,26 @@ import { colors, radii, spacing, typography } from '../theme';
 import { IconButton } from '../components/ui/IconButton';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { useModels } from '../hooks/useModels';
+import {
+  catalogProjector,
+  hasVision,
+  reasoningStyle,
+} from '../model/capabilities';
 import { getCatalogModel, QUANT_NOTES } from '../model/catalog';
 import { formatBytes, getFreeBytes, storageNote } from '../model/modelStorage';
-import type { InstalledModel, ModelSource } from '../model/types';
+import type { DownloadProgress, InstalledModel, ModelSource } from '../model/types';
+
+function capabilityLabels(model: InstalledModel) {
+  return [
+    hasVision(model) ? 'Vision' : null,
+    reasoningStyle(model) ? 'Reasoning' : null,
+  ].filter(Boolean);
+}
+
+function downloadLabel(download: DownloadProgress) {
+  const progress = progressLabel(download.bytesWritten, download.contentLength);
+  return download.label ? `${download.label} · ${progress}` : progress;
+}
 
 type AddStep = 'chooser' | 'catalog' | 'url' | 'import';
 
@@ -75,10 +92,64 @@ const ModelsScreen = () => {
     importFromLocalPath,
     select,
     remove,
+    downloadProjector,
+    attachProjector,
     cancelDownload,
     resumeDownload,
     discardDownload,
   } = useModels();
+
+  const importProjector = async (model: InstalledModel) => {
+    try {
+      const [file] = await pick({
+        allowMultiSelection: false,
+        type: ['public.item', '*/*'],
+      });
+
+      if (!file) {
+        return;
+      }
+
+      const fileName = file.name ?? 'mmproj.gguf';
+      const [copy] = await keepLocalCopy({
+        files: [{ uri: file.uri, fileName }],
+        destination: 'documentDirectory',
+      });
+
+      if (copy.status !== 'success') {
+        throw new Error(copy.copyError || 'Could not copy that file');
+      }
+
+      await attachProjector(model.id, copy.localUri, fileName);
+    } catch (err) {
+      if (isErrorWithCode(err) && err.code === errorCodes.OPERATION_CANCELED) {
+        return;
+      }
+
+      Alert.alert(
+        'Could not add vision',
+        err instanceof Error ? err.message : 'Could not use that file',
+      );
+    }
+  };
+
+  const offerVision = (model: InstalledModel) => {
+    const projector = catalogProjector(model);
+
+    if (projector) {
+      void downloadProjector(model.id, projector.url, projector.sizeBytes);
+      return;
+    }
+
+    Alert.alert(
+      'Add a vision encoder',
+      'Pick the mmproj .gguf file made for this exact model. Without it, the model cannot see images.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Choose file', onPress: () => void importProjector(model) },
+      ],
+    );
+  };
 
   useEffect(() => {
     getFreeBytes()
@@ -164,20 +235,23 @@ const ModelsScreen = () => {
       return;
     }
 
-    const note = storageNote(model.sizeBytes);
+    const totalBytes = model.sizeBytes + (model.projector?.sizeBytes ?? 0);
+    const note = storageNote(totalBytes);
     const freeLabel =
       freeBytes == null
         ? ''
         : ` ${formatBytes(freeBytes)} free on this device.`;
     const tight =
-      freeBytes != null && freeBytes < model.sizeBytes * 1.1
+      freeBytes != null && freeBytes < totalBytes * 1.1
         ? ' This device may not have enough free space.'
         : '';
 
-    if (model.sizeBytes >= 1_000_000_000) {
+    if (totalBytes >= 1_000_000_000) {
       Alert.alert(
         'Download this model?',
-        `${model.name} is ${formatBytes(model.sizeBytes)}.${freeLabel}${
+        `${model.name} is ${formatBytes(totalBytes)}${
+          model.projector ? ', including its vision encoder' : ''
+        }.${freeLabel}${
           note ? ` ${note}` : ''
         }${tight}`,
         [
@@ -283,8 +357,7 @@ const ModelsScreen = () => {
               {getCatalogModel(id)?.name ?? id}
             </Text>
             <Text style={styles.progress}>
-              Downloading ·{' '}
-              {progressLabel(download.bytesWritten, download.contentLength)}
+              Downloading · {downloadLabel(download)}
             </Text>
             <Pressable
               onPress={() => cancelDownload(id)}
@@ -297,6 +370,9 @@ const ModelsScreen = () => {
 
         {installed.map(model => {
           const download = downloads[model.id];
+          const capabilities = capabilityLabels(model);
+          const missingVision =
+            !model.projectorPath && catalogProjector(model) != null;
 
           return (
             <View key={model.id} style={styles.card}>
@@ -307,16 +383,21 @@ const ModelsScreen = () => {
                 ) : null}
               </View>
               <Text style={styles.meta}>
-                {sourceLabel(model.source)} · {formatBytes(model.bytes)}
+                {[
+                  sourceLabel(model.source),
+                  formatBytes(model.bytes),
+                  ...capabilities,
+                ].join(' · ')}
               </Text>
+              {missingVision && !download ? (
+                <Text style={styles.hint}>
+                  The vision encoder is missing, so this model can't see images
+                  yet.
+                </Text>
+              ) : null}
               {download ? (
                 <>
-                  <Text style={styles.progress}>
-                    {progressLabel(
-                      download.bytesWritten,
-                      download.contentLength,
-                    )}
-                  </Text>
+                  <Text style={styles.progress}>{downloadLabel(download)}</Text>
                   <Pressable
                     onPress={() => cancelDownload(model.id)}
                     style={styles.actionButton}
@@ -336,6 +417,16 @@ const ModelsScreen = () => {
                       <Text style={styles.actionLabel}>Select</Text>
                     </Pressable>
                   )}
+                  {!model.projectorPath ? (
+                    <Pressable
+                      onPress={() => offerVision(model)}
+                      style={styles.actionButton}
+                    >
+                      <Text style={styles.actionLabel}>
+                        {missingVision ? 'Get vision' : 'Add vision'}
+                      </Text>
+                    </Pressable>
+                  ) : null}
                   <Pressable
                     onPress={() => confirmRemove(model)}
                     style={styles.actionButton}
@@ -441,7 +532,17 @@ const ModelsScreen = () => {
                       <View key={family.id} style={styles.card}>
                         <Text style={styles.cardTitle}>{family.name}</Text>
                         <Text style={styles.meta}>
-                          {model.quant} · {formatBytes(model.sizeBytes)}
+                          {[
+                            model.quant,
+                            formatBytes(
+                              model.sizeBytes +
+                                (family.projector?.sizeBytes ?? 0),
+                            ),
+                            family.projector ? 'Vision' : null,
+                            family.reasoning ? 'Reasoning' : null,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
                         </Text>
                         <Text style={styles.hint}>{family.description}</Text>
                         {family.variants.length > 1 ? (
@@ -492,10 +593,7 @@ const ModelsScreen = () => {
                         ) : null}
                         {download ? (
                           <Text style={styles.progress}>
-                            {progressLabel(
-                              download.bytesWritten,
-                              download.contentLength,
-                            )}
+                            {downloadLabel(download)}
                           </Text>
                         ) : installedModel ? (
                           <Text style={styles.badge}>Already downloaded</Text>

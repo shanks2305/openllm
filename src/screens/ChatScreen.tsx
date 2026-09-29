@@ -1,25 +1,36 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   Share,
   StyleSheet,
-  Text,
   View,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import {
+  discardAttachments,
+  MAX_ATTACHMENTS,
+  pickFiles,
+  pickImages,
+} from '../chat/attachments';
+import { extractArtifacts } from '../chat/artifacts';
 import { conversationToMarkdown } from '../chat/export';
 import { instructionLabel } from '../chat/instructions';
-import { colors, spacing, typography } from '../theme';
+import type { Attachment } from '../chat/types';
+import { MAX_MEMORY_LENGTH, memoryStore } from '../memory/memoryStore';
+import { hasVision, reasoningStyle } from '../model/capabilities';
+import { colors } from '../theme';
 import { useChat } from '../hooks/useChat';
 import { useModels } from '../hooks/useModels';
+import { useSettings } from '../hooks/useSettings';
 import type { RootStackParamList } from '../navigation/AppNavigator';
+import { ArtifactSheet } from '../components/chat/ArtifactSheet';
 import { ChatHeader } from '../components/chat/ChatHeader';
 import { ChatSidebar } from '../components/chat/ChatSidebar';
 import { Composer } from '../components/chat/Composer';
+import type { AttachSource } from '../components/chat/Composer';
 import { EmptyState } from '../components/chat/EmptyState';
 import { InstructionSheet } from '../components/chat/InstructionSheet';
 import { MessageList } from '../components/chat/MessageList';
@@ -39,12 +50,18 @@ const ChatScreen = () => {
   const navigation = useNavigation<ChatNav>();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const [artifactIndex, setArtifactIndex] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const settings = useSettings();
   const reportedStorageError = useRef<string | null>(null);
   const reportedModelError = useRef<string | null>(null);
   const {
     messages,
+    branches,
     conversations,
     activeId,
     instructionPrompt,
@@ -55,11 +72,21 @@ const ChatScreen = () => {
     sendMessage,
     editAndResend,
     regenerate,
+    switchBranch,
     stopGeneration,
     newChat,
     openChat,
     deleteChat,
     renameChat,
+    archiveChat,
+    pinChat,
+    moveChat,
+    createProject,
+    renameProject,
+    setProjectInstructions,
+    deleteProject,
+    projects,
+    activeProject,
     assignModel,
     setInstruction,
   } = useChat();
@@ -75,9 +102,6 @@ const ChatScreen = () => {
       message => message.role === 'user' && message.content.trim(),
     ),
   );
-  const activeTitle =
-    savedChats.find(chat => chat.id === activeId)?.title ?? 'llmOS';
-
   useEffect(() => {
     if (!storageError || storageError === reportedStorageError.current) {
       return;
@@ -101,7 +125,88 @@ const ChatScreen = () => {
     Alert.alert('Could not switch model', modelError);
   }, [modelError]);
 
+  const artifacts = useMemo(() => extractArtifacts(messages), [messages]);
+
+  useEffect(() => {
+    setArtifactIndex(null);
+  }, [activeId]);
+
   const closeSidebar = () => setSidebarOpen(false);
+  const reasoning = reasoningStyle(selectedModel);
+  const vision = hasVision(selectedModel);
+
+  const clearDraft = () => {
+    setDraft('');
+    setEditingId(null);
+    setAttachments(current => {
+      discardAttachments(current);
+      return [];
+    });
+  };
+
+  const startNewChat = (projectId?: string) => {
+    clearDraft();
+    newChat(projectId).catch(alertError);
+  };
+
+  const attach = async (source: AttachSource) => {
+    const room = MAX_ATTACHMENTS - attachments.length;
+
+    if (room <= 0) {
+      return;
+    }
+
+    setAttaching(true);
+
+    try {
+      const picked =
+        source === 'photos' ? await pickImages(room) : await pickFiles(room);
+
+      if (!picked?.length) {
+        return;
+      }
+
+      setAttachments(current => [...current, ...picked]);
+
+      if (!vision && picked.some(item => item.kind === 'image')) {
+        Alert.alert(
+          "This model can't see images",
+          'Switch to a vision model such as SmolVLM2 or Qwen2.5-VL in Models. The image stays attached either way.',
+        );
+      }
+    } catch (error) {
+      alertError(error);
+    } finally {
+      setAttaching(false);
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(current => {
+      discardAttachments(current.filter(item => item.id === id));
+      return current.filter(item => item.id !== id);
+    });
+  };
+
+  const remember = (text: string) => {
+    Alert.prompt(
+      'Remember',
+      'The model will know this in every chat. Edit it before saving.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Save',
+          onPress: (value?: string) => {
+            if (!memoryStore.add(value ?? '')) {
+              Alert.alert('Not saved', 'That is empty, already saved, or memory is full.');
+            }
+          },
+        },
+      ],
+      'plain-text',
+      text.trim().slice(0, MAX_MEMORY_LENGTH),
+    );
+  };
 
   const shareChat = (id: string) => {
     const chat = conversations.find(item => item.id === id);
@@ -118,9 +223,16 @@ const ChatScreen = () => {
   };
 
   const submit = (text: string) => {
-    const task = editingId ? editAndResend(editingId, text) : sendMessage(text);
+    const task = editingId
+      ? editAndResend(editingId, text)
+      : sendMessage(text, attachments);
     setEditingId(null);
     setDraft('');
+
+    if (!editingId) {
+      setAttachments([]);
+    }
+
     task.catch(alertError);
   };
 
@@ -131,9 +243,11 @@ const ChatScreen = () => {
     >
       <View style={styles.flex}>
         <ChatHeader
-          title={activeTitle}
+          modelName={selectedModel?.name}
+          modelDisabled={generating}
           onOpenSidebar={() => setSidebarOpen(true)}
-          onOpenSettings={() => navigation.navigate('Settings')}
+          onOpenModelPicker={() => setModelPickerOpen(true)}
+          onNewChat={() => startNewChat()}
           onShare={
             activeId && messages.length > 0 && !generating
               ? () => shareChat(activeId)
@@ -151,6 +265,7 @@ const ChatScreen = () => {
         ) : (
           <MessageList
             messages={messages}
+            branches={branches}
             generating={generating}
             loadingModel={phase === 'loading'}
             stats={stats}
@@ -161,12 +276,64 @@ const ChatScreen = () => {
             onRegenerate={message => {
               regenerate(message.id).catch(alertError);
             }}
+            onSwitchBranch={switchBranch}
+            onRemember={message => remember(message.content)}
+            onOpenArtifact={(message, code) => {
+              const found = artifacts.findIndex(
+                item => item.messageId === message.id && item.code === code,
+              );
+
+              if (found >= 0) {
+                setArtifactIndex(found);
+              }
+            }}
           />
         )}
+        <Composer
+          value={draft}
+          onChangeText={setDraft}
+          generating={generating}
+          hasModel={Boolean(selectedModel)}
+          editing={editingId != null}
+          instructionLabel={
+            !instructionPrompt.trim() && activeProject?.instructions
+              ? activeProject.name
+              : instructionLabel(instructionPrompt)
+          }
+          attachments={attachments}
+          attaching={attaching}
+          canAttachMore={attachments.length < MAX_ATTACHMENTS}
+          onAttach={source => {
+            attach(source).catch(alertError);
+          }}
+          onRemoveAttachment={removeAttachment}
+          tools={{
+            on: settings.tools,
+            onToggle: () => settings.setTools(!settings.tools),
+          }}
+          thinking={
+            reasoning === 'toggle'
+              ? {
+                  on: settings.thinking,
+                  onToggle: () => settings.setThinking(!settings.thinking),
+                }
+              : undefined
+          }
+          onOpenInstructions={() => setInstructionsOpen(true)}
+          onCancelEdit={() => {
+            setEditingId(null);
+            setDraft('');
+          }}
+          onSend={submit}
+          onStop={() => {
+            stopGeneration().catch(alertError);
+          }}
+        />
         <ModelPicker
+          visible={modelPickerOpen}
           models={installed}
           selectedId={selectedId}
-          disabled={generating}
+          onClose={() => setModelPickerOpen(false)}
           onSelect={id => {
             select(id)
               .then(ok => {
@@ -178,34 +345,11 @@ const ChatScreen = () => {
           }}
           onManageModels={() => navigation.navigate('Models')}
         />
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Chat instructions"
-          disabled={generating}
-          onPress={() => setInstructionsOpen(true)}
-          style={({ pressed }) => [
-            styles.instructions,
-            { opacity: generating ? 0.5 : pressed ? 0.75 : 1 },
-          ]}
-        >
-          <Text style={styles.instructionsLabel}>
-            {instructionLabel(instructionPrompt)} instructions
-          </Text>
-        </Pressable>
-        <Composer
-          value={draft}
-          onChangeText={setDraft}
-          generating={generating}
-          hasModel={Boolean(selectedModel)}
-          editing={editingId != null}
-          onCancelEdit={() => {
-            setEditingId(null);
-            setDraft('');
-          }}
-          onSend={submit}
-          onStop={() => {
-            stopGeneration().catch(alertError);
-          }}
+        <ArtifactSheet
+          artifacts={artifacts}
+          index={artifactIndex}
+          onChangeIndex={setArtifactIndex}
+          onClose={() => setArtifactIndex(null)}
         />
         <InstructionSheet
           visible={instructionsOpen}
@@ -220,19 +364,33 @@ const ChatScreen = () => {
             title: chat.title,
             modelName: installed.find(model => model.id === chat.modelId)?.name,
             messages: chat.messages,
+            pinned: chat.pinned,
+            archived: chat.archived,
+            projectId: chat.projectId,
           }))}
+          projects={projects}
           activeId={activeId}
           modelName={selectedModel?.name}
           onClose={closeSidebar}
-          onNewChat={() => {
-            setDraft('');
-            setEditingId(null);
-            newChat().catch(alertError);
+          onNewChat={projectId => {
+            startNewChat(projectId);
             closeSidebar();
           }}
+          onPinChat={pinChat}
+          onArchiveChat={(id, archived) => {
+            archiveChat(id, archived).catch(alertError);
+          }}
+          onMoveChat={moveChat}
+          onCreateProject={createProject}
+          onRenameProject={renameProject}
+          onProjectInstructions={setProjectInstructions}
+          onDeleteProject={deleteProject}
+          onOpenMemory={() => {
+            closeSidebar();
+            navigation.navigate('Memory');
+          }}
           onOpenChat={id => {
-            setDraft('');
-            setEditingId(null);
+            clearDraft();
             openChat(id).catch(alertError);
           }}
           onDeleteChat={id => {
@@ -272,15 +430,6 @@ const styles = StyleSheet.create({
   flex: {
     flex: 1,
     backgroundColor: colors.background,
-  },
-  instructions: {
-    paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-  },
-  instructionsLabel: {
-    ...typography.caption,
-    color: colors.accent,
-    fontWeight: '600',
   },
 });
 

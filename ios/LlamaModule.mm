@@ -5,17 +5,70 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #import <llama/ggml-backend.h>
 #import <llama/gguf.h>
 #import <llama/llama.h>
+#import <llama/mtmd-helper.h>
+#import <llama/mtmd.h>
+
+typedef std::shared_ptr<mtmd_bitmap> LlamaBitmap;
 
 struct LlamaChatTurn {
   std::string role;
   std::string content;
+  std::vector<std::string> imagePaths;
+  std::vector<LlamaBitmap> images;
 };
+
+static void llama_log_warnings(enum ggml_log_level level, const char *text,
+                               void *) {
+  if (level >= GGML_LOG_LEVEL_WARN) {
+    NSLog(@"[llama] %s", text);
+  }
+}
+
+static bool turns_have_images(const std::vector<LlamaChatTurn> &turns) {
+  return std::any_of(turns.begin(), turns.end(), [](const LlamaChatTurn &turn) {
+    return !turn.images.empty();
+  });
+}
+
+// Each loaded image becomes one media marker ahead of the turn's text, which
+// mtmd_tokenize later swaps for the image embedding.
+static std::vector<LlamaChatTurn>
+turns_with_media_markers(const std::vector<LlamaChatTurn> &turns) {
+  const std::string marker = mtmd_default_marker();
+  std::vector<LlamaChatTurn> out = turns;
+
+  for (LlamaChatTurn &turn : out) {
+    std::string prefix;
+
+    for (size_t i = 0; i < turn.images.size(); ++i) {
+      prefix += marker + "\n";
+    }
+
+    turn.content = prefix + turn.content;
+  }
+
+  return out;
+}
+
+static std::vector<const mtmd_bitmap *>
+turn_bitmaps(const std::vector<LlamaChatTurn> &turns) {
+  std::vector<const mtmd_bitmap *> out;
+
+  for (const LlamaChatTurn &turn : turns) {
+    for (const LlamaBitmap &image : turn.images) {
+      out.push_back(image.get());
+    }
+  }
+
+  return out;
+}
 
 static void append_fallback_turn(std::string &out, const std::string &arch,
                                  const std::string &role,
@@ -100,13 +153,24 @@ static std::vector<LlamaChatTurn> parse_chat_turns(NSString *prompt) {
           role = "user";
         }
 
-        turns.push_back({role, std::string(content.UTF8String)});
+        LlamaChatTurn turn = {role, std::string(content.UTF8String), {}, {}};
+        id imagesValue = ((NSDictionary *)item)[@"images"];
+
+        if (role == "user" && [imagesValue isKindOfClass:[NSArray class]]) {
+          for (id image in (NSArray *)imagesValue) {
+            if ([image isKindOfClass:[NSString class]] && [image length] > 0) {
+              turn.imagePaths.emplace_back([(NSString *)image UTF8String]);
+            }
+          }
+        }
+
+        turns.push_back(std::move(turn));
       }
     }
   }
 
   if (turns.empty() && prompt.length > 0) {
-    turns.push_back({"user", std::string(prompt.UTF8String)});
+    turns.push_back({"user", std::string(prompt.UTF8String), {}, {}});
   }
 
   return turns;
@@ -299,6 +363,7 @@ static uint32_t gguf_context_length(const char *path, std::string &arch) {
   llama_model *model;
   llama_context *context;
   llama_sampler *sampler;
+  mtmd_context *mtmd;
 
   dispatch_queue_t llamaQueue;
   std::atomic_bool stopRequested;
@@ -369,6 +434,7 @@ RCT_EXPORT_MODULE(Llama);
     model = nullptr;
     context = nullptr;
     sampler = nullptr;
+    mtmd = nullptr;
     stopRequested = false;
     hasListeners = NO;
     usingGpu = NO;
@@ -388,8 +454,17 @@ RCT_EXPORT_MODULE(Llama);
   }
 }
 
+- (void)freeProjector {
+  if (mtmd != nullptr) {
+    mtmd_free(mtmd);
+    mtmd = nullptr;
+  }
+}
+
 - (void)freeContextAndModel {
   [self freeSampler];
+  // The projector keeps a pointer to the text model, so it goes first.
+  [self freeProjector];
   cachedTokens.clear();
 
   if (context != nullptr) {
@@ -409,13 +484,7 @@ RCT_EXPORT_METHOD(
             NSNumber *)microBatchSize resolver : (RCTPromiseResolveBlock)
             resolve rejecter : (RCTPromiseRejectBlock)reject) {
   dispatch_async(llamaQueue, ^{
-    llama_log_set(
-        [](enum ggml_log_level level, const char *text, void *) {
-          if (level >= GGML_LOG_LEVEL_WARN) {
-            NSLog(@"[llama] %s", text);
-          }
-        },
-        nullptr);
+    llama_log_set(llama_log_warnings, nullptr);
 
     llama_backend_init();
     ggml_backend_load_all();
@@ -521,6 +590,54 @@ RCT_EXPORT_METHOD(
   });
 }
 
+RCT_EXPORT_METHOD(loadProjector : (NSString *)path resolver : (
+    RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
+  dispatch_async(llamaQueue, ^{
+    if (self->model == nullptr) {
+      reject(@"MODEL_NOT_LOADED", @"Load the model before its vision encoder",
+             nil);
+      return;
+    }
+
+    [self freeProjector];
+    self->cachedTokens.clear();
+    mtmd_helper_log_set(llama_log_warnings, nullptr);
+
+    mtmd_context_params params = mtmd_context_params_default();
+    params.use_gpu = self->usingGpu;
+    params.print_timings = false;
+    params.warmup = false;
+    params.media_marker = mtmd_default_marker();
+    params.n_threads =
+        std::max(1, (int32_t)NSProcessInfo.processInfo.processorCount - 2);
+
+    self->mtmd = mtmd_init_from_file(path.UTF8String, self->model, params);
+
+    if (self->mtmd == nullptr) {
+      reject(@"PROJECTOR_LOAD_FAILED",
+             @"The vision encoder does not match this model", nil);
+      return;
+    }
+
+    if (!mtmd_support_vision(self->mtmd)) {
+      [self freeProjector];
+      reject(@"PROJECTOR_LOAD_FAILED",
+             @"This encoder file does not support images", nil);
+      return;
+    }
+
+    resolve(@{@"vision" : @YES});
+  });
+}
+
+RCT_EXPORT_METHOD(unloadProjector : (RCTPromiseResolveBlock)
+                      resolve rejecter : (RCTPromiseRejectBlock)reject) {
+  dispatch_async(llamaQueue, ^{
+    [self freeProjector];
+    resolve(@YES);
+  });
+}
+
 RCT_EXPORT_METHOD(readModelMetadata : (NSString *)path resolver : (
     RCTPromiseResolveBlock)resolve rejecter : (RCTPromiseRejectBlock)reject) {
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -575,20 +692,66 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt options : (NSDictionary *)
     const std::vector<std::string> stops = option_stops(options);
     const int32_t promptBudget = nCtx - maxNewTokens;
 
+    if (self->mtmd != nullptr) {
+      for (LlamaChatTurn &turn : turns) {
+        for (const std::string &path : turn.imagePaths) {
+          mtmd_helper_bitmap_wrapper loaded =
+              mtmd_helper_bitmap_init_from_file(self->mtmd, path.c_str(),
+                                                false);
+
+          if (loaded.bitmap != nullptr) {
+            turn.images.emplace_back(loaded.bitmap, mtmd_bitmap_free);
+          } else {
+            NSLog(@"[llama] skipped unreadable image %s", path.c_str());
+          }
+        }
+      }
+    }
+
+    // Image prompts go through mtmd and are evaluated from scratch; their
+    // chunks do not map onto plain token ids for prefix reuse.
+    const bool multimodal = turns_have_images(turns);
     std::vector<llama_token> promptTokens;
+    mtmd_input_chunks *chunks = nullptr;
+    int32_t tokenCount = 0;
     size_t droppedTurns = 0;
 
     while (true) {
-      const std::string formattedPrompt =
-          llama_formatted_chat_prompt(self->model, turns);
+      if (multimodal) {
+        const std::string formattedPrompt = llama_formatted_chat_prompt(
+            self->model, turns_with_media_markers(turns));
+        std::vector<const mtmd_bitmap *> bitmaps = turn_bitmaps(turns);
+        mtmd_input_text text = {formattedPrompt.c_str(),
+                                formattedPrompt.size(), true, true};
 
-      if (!tokenize_text(vocab, formattedPrompt, promptTokens)) {
-        reject(@"TOKENIZE_FAILED", @"Failed to tokenize prompt", nil);
-        return;
+        if (chunks != nullptr) {
+          mtmd_input_chunks_free(chunks);
+        }
+
+        chunks = mtmd_input_chunks_init();
+
+        if (mtmd_tokenize(self->mtmd, chunks, &text, bitmaps.data(),
+                          bitmaps.size()) != 0) {
+          mtmd_input_chunks_free(chunks);
+          reject(@"IMAGE_FAILED", @"Could not process the attached image",
+                 nil);
+          return;
+        }
+
+        tokenCount = (int32_t)mtmd_helper_get_n_tokens(chunks);
+      } else {
+        const std::string formattedPrompt =
+            llama_formatted_chat_prompt(self->model, turns);
+
+        if (!tokenize_text(vocab, formattedPrompt, promptTokens)) {
+          reject(@"TOKENIZE_FAILED", @"Failed to tokenize prompt", nil);
+          return;
+        }
+
+        tokenCount = (int32_t)promptTokens.size();
       }
 
-      if ((int32_t)promptTokens.size() <= promptBudget ||
-          droppable_turns(turns) == 0) {
+      if (tokenCount <= promptBudget || droppable_turns(turns) == 0) {
         break;
       }
 
@@ -597,49 +760,71 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt options : (NSDictionary *)
       droppedTurns += before - turns.size();
     }
 
-    const int32_t tokenCount = (int32_t)promptTokens.size();
+    if (tokenCount == 0 || tokenCount > promptBudget) {
+      if (chunks != nullptr) {
+        mtmd_input_chunks_free(chunks);
+      }
 
-    if (tokenCount == 0) {
-      reject(@"TOKENIZE_FAILED", @"Prompt produced no tokens", nil);
+      if (tokenCount == 0) {
+        reject(@"TOKENIZE_FAILED", @"Prompt produced no tokens", nil);
+      } else {
+        reject(@"CONTEXT_OVERFLOW",
+               @"This message is too long for the context size. Shorten it, "
+               @"lower the response length, or raise the context size in "
+               @"Settings.",
+               nil);
+      }
       return;
-    }
-
-    if (tokenCount > promptBudget) {
-      reject(@"CONTEXT_OVERFLOW",
-             @"This message is too long for the context size. Shorten it, "
-             @"lower the response length, or raise the context size in "
-             @"Settings.",
-             nil);
-      return;
-    }
-
-    // Reuse the KV cache for the prefix shared with the previous prompt. At
-    // least one prompt token is always decoded so fresh logits are available.
-    size_t reused = 0;
-    const size_t cacheLimit =
-        std::min(self->cachedTokens.size(), promptTokens.size() - 1);
-
-    while (reused < cacheLimit &&
-           self->cachedTokens[reused] == promptTokens[reused]) {
-      reused += 1;
     }
 
     llama_memory_t memory = llama_get_memory(self->context);
-
-    if (reused == 0 ||
-        !llama_memory_seq_rm(memory, 0, (llama_pos)reused, -1)) {
-      llama_memory_clear(memory, true);
-      reused = 0;
-    }
-
-    self->cachedTokens.assign(promptTokens.begin(),
-                              promptTokens.begin() + (long)reused);
-
     const int32_t nBatch = (int32_t)llama_n_ubatch(self->context);
     llama_batch batch = llama_batch_init(nBatch, 0, 1);
-    int32_t nPast = (int32_t)reused;
+    size_t reused = 0;
+    int32_t nPast = 0;
 
-    for (int32_t consumed = (int32_t)reused; consumed < tokenCount;) {
+    if (multimodal) {
+      llama_memory_clear(memory, true);
+      self->cachedTokens.clear();
+      llama_pos newPast = 0;
+      const int32_t result = mtmd_helper_eval_chunks(
+          self->mtmd, self->context, chunks, 0, 0,
+          (int32_t)llama_n_batch(self->context), true, &newPast);
+      mtmd_input_chunks_free(chunks);
+      chunks = nullptr;
+
+      if (result != 0) {
+        llama_batch_free(batch);
+        llama_memory_clear(memory, true);
+        reject(@"DECODE_FAILED", @"Failed to read the image", nil);
+        return;
+      }
+
+      nPast = (int32_t)newPast;
+    } else {
+      // Reuse the KV cache for the prefix shared with the previous prompt. At
+      // least one prompt token is always decoded so fresh logits exist.
+      const size_t cacheLimit =
+          std::min(self->cachedTokens.size(), promptTokens.size() - 1);
+
+      while (reused < cacheLimit &&
+             self->cachedTokens[reused] == promptTokens[reused]) {
+        reused += 1;
+      }
+
+      if (reused == 0 ||
+          !llama_memory_seq_rm(memory, 0, (llama_pos)reused, -1)) {
+        llama_memory_clear(memory, true);
+        reused = 0;
+      }
+
+      self->cachedTokens.assign(promptTokens.begin(),
+                                promptTokens.begin() + (long)reused);
+      nPast = (int32_t)reused;
+    }
+
+    for (int32_t consumed = multimodal ? tokenCount : (int32_t)reused;
+         consumed < tokenCount;) {
       const int32_t remaining = tokenCount - consumed;
       const int32_t nEval = remaining < nBatch ? remaining : nBatch;
       batch.n_tokens = nEval;
@@ -789,7 +974,9 @@ RCT_EXPORT_METHOD(generate : (NSString *)prompt options : (NSDictionary *)
         return;
       }
 
-      self->cachedTokens.push_back(token);
+      if (!multimodal) {
+        self->cachedTokens.push_back(token);
+      }
       nPast += 1;
     }
 

@@ -16,6 +16,7 @@ import {
   partialMetaPath,
   partialModelPath,
   partialRestPath,
+  projectorFilePath,
   readFileSize,
   readManifest,
   readTrainedContext,
@@ -45,6 +46,12 @@ export type ModelManagerState = {
 };
 
 type Listener = () => void;
+
+function withoutProjector(model: InstalledModel): InstalledModel {
+  const copy = { ...model };
+  delete copy.projectorPath;
+  return copy;
+}
 
 class ModelManager {
   private ready = false;
@@ -120,6 +127,17 @@ class ModelManager {
     return selected.path;
   }
 
+  async getActiveProjectorPath() {
+    await this.hydrate();
+    const path = this.getSelectedModel()?.projectorPath;
+
+    if (!path) {
+      return null;
+    }
+
+    return (await fileExists(path)) ? path : null;
+  }
+
   async downloadCatalog(id: string) {
     const model = getCatalogModel(id);
 
@@ -135,6 +153,152 @@ class ModelManager {
       origin: model.id,
       expectedBytes: model.sizeBytes,
     });
+
+    if (model.projector && this.manifest.installed[model.id]) {
+      await this.downloadProjector(
+        model.id,
+        model.projector.url,
+        model.projector.sizeBytes,
+      );
+    }
+  }
+
+  // Vision models need a second GGUF with the image encoder. It is small next
+  // to the weights, so it downloads in one go without resume support.
+  async downloadProjector(modelId: string, url: string, expectedBytes: number) {
+    const installed = this.manifest.installed[modelId];
+
+    if (!installed) {
+      throw new Error('Download the model first');
+    }
+
+    if (installed.projectorPath && (await fileExists(installed.projectorPath))) {
+      return;
+    }
+
+    if (this.downloads[modelId]) {
+      return;
+    }
+
+    await this.assertDiskSpace(expectedBytes);
+    const dest = projectorFilePath(modelId);
+    const part = `${dest}.part`;
+    await removeFileIfExists(part);
+    this.cancelled.delete(modelId);
+    this.downloads[modelId] = {
+      bytesWritten: 0,
+      contentLength: expectedBytes,
+      label: 'Vision encoder',
+    };
+    this.emit();
+
+    const { promise, jobId } = RNFS.downloadFile({
+      fromUrl: url,
+      toFile: part,
+      background: true,
+      progressDivider: 4,
+      headers: { Accept: '*/*', 'User-Agent': 'freeGPT/1.0' },
+      progress: res => {
+        this.downloads[modelId] = {
+          bytesWritten: res.bytesWritten,
+          contentLength: expectedBytes || res.contentLength,
+          label: 'Vision encoder',
+        };
+        this.emit();
+      },
+    });
+    this.downloadJobs.set(modelId, jobId);
+
+    try {
+      const result = await promise;
+
+      if (this.cancelled.has(modelId)) {
+        await removeFileIfExists(part);
+        return;
+      }
+
+      if ((result.statusCode ?? 0) >= 400) {
+        throw new Error(`Download failed (${result.statusCode})`);
+      }
+
+      if ((await readFileSize(part)) + 4096 < expectedBytes) {
+        throw new Error('Download stopped before the file finished');
+      }
+
+      await assertGgufFile(part);
+      await moveFile(part, dest);
+      await this.setProjector(modelId, dest);
+    } catch (error) {
+      await removeFileIfExists(part);
+
+      if (this.cancelled.has(modelId) || this.isCancelError(error)) {
+        return;
+      }
+
+      const reason = error instanceof Error ? error.message : 'Download failed';
+      throw new Error(
+        `The model is installed, but its vision encoder did not finish (${reason}). Tap Get vision in Models to try again.`,
+      );
+    } finally {
+      this.cancelled.delete(modelId);
+      this.downloadJobs.delete(modelId);
+      delete this.downloads[modelId];
+      this.emit();
+    }
+  }
+
+  async attachProjector(modelId: string, uri: string, fileName: string) {
+    await this.hydrate();
+
+    if (!this.manifest.installed[modelId]) {
+      throw new Error('Model is not installed');
+    }
+
+    if (!fileName.toLowerCase().endsWith('.gguf')) {
+      throw new Error('Choose the mmproj .gguf file that belongs to this model');
+    }
+
+    const source = toFsPath(uri);
+    const dest = projectorFilePath(modelId);
+    const part = `${dest}.part`;
+
+    try {
+      await this.assertDiskSpace(await readFileSize(source));
+      await copyFile(source, part);
+      await assertGgufFile(part);
+      await moveFile(part, dest);
+      await removeFileIfExists(source);
+      await this.setProjector(modelId, dest);
+    } catch (error) {
+      await removeFileIfExists(part);
+      throw error;
+    }
+  }
+
+  async detachProjector(modelId: string) {
+    const installed = this.manifest.installed[modelId];
+
+    if (!installed?.projectorPath) {
+      return;
+    }
+
+    await removeFileIfExists(installed.projectorPath);
+    this.manifest.installed[modelId] = withoutProjector(installed);
+    await writeManifest(this.manifest);
+    this.emit();
+  }
+
+  private async setProjector(modelId: string, path: string) {
+    const installed = this.manifest.installed[modelId];
+
+    if (!installed) {
+      await removeFileIfExists(path);
+      return;
+    }
+
+    this.manifest.installed[modelId] = { ...installed, projectorPath: path };
+    await writeManifest(this.manifest);
+    this.emit();
   }
 
   async downloadFromUrl(rawUrl: string) {
@@ -221,6 +385,11 @@ class ModelManager {
 
     if (installed) {
       await removeFileIfExists(installed.path);
+
+      if (installed.projectorPath) {
+        await removeFileIfExists(installed.projectorPath);
+      }
+
       delete this.manifest.installed[id];
     }
 
@@ -317,6 +486,9 @@ class ModelManager {
     for (const [id, model] of Object.entries(this.manifest.installed)) {
       if (!(await fileExists(model.path))) {
         delete this.manifest.installed[id];
+        changed = true;
+      } else if (model.projectorPath && !(await fileExists(model.projectorPath))) {
+        this.manifest.installed[id] = withoutProjector(model);
         changed = true;
       }
     }

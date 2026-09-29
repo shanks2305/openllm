@@ -1,6 +1,8 @@
 export type ChatTurn = {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  // Local JPEG paths. Only models loaded with a vision projector read them.
+  images?: string[];
 };
 
 export type GenerateOptions = {

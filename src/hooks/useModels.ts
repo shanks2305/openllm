@@ -65,6 +65,18 @@ export function useModels() {
     [run],
   );
 
+  const downloadProjector = useCallback(
+    (id: string, url: string, sizeBytes: number) =>
+      run(() => modelManager.downloadProjector(id, url, sizeBytes)),
+    [run],
+  );
+
+  const attachProjector = useCallback(
+    (id: string, uri: string, fileName: string) =>
+      run(() => modelManager.attachProjector(id, uri, fileName)),
+    [run],
+  );
+
   const cancelDownload = useCallback((id: string) => {
     modelManager.cancelDownload(id);
   }, []);
@@ -88,6 +100,8 @@ export function useModels() {
     importFromLocalPath,
     select,
     remove,
+    downloadProjector,
+    attachProjector,
     cancelDownload,
     resumeDownload,
     discardDownload,

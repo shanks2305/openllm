@@ -4,14 +4,41 @@ import { conversationStore } from '../chat/conversationStore';
 import type { ConversationState } from '../chat/conversationStore';
 import { createId } from '../chat/ids';
 import {
+  buildSystemPrompt,
   cleanGeneratedTitle,
   coarseHistoryBudget,
   messagesToTurns,
   TITLE_REQUEST,
 } from '../chat/prompt';
-import type { ChatMessage, MessageStats } from '../chat/types';
+import { documentBudgetChars } from '../chat/documents';
+import {
+  findToolCall,
+  NO_THINK,
+  THINKING_MIN_TOKENS,
+  visibleToolText,
+  withThinkingSwitch,
+} from '../chat/generation';
+import { stripReasoning } from '../chat/reasoning';
+import { matchChat } from '../chat/search';
+import {
+  MAX_TOOL_ROUNDS,
+  runTool,
+  TOOL_CALL_CLOSE,
+  toolResponseTurn,
+  toolsPrompt,
+} from '../chat/tools';
+import type { ToolContext } from '../chat/tools';
+import { memoryStore } from '../memory/memoryStore';
+import type {
+  Attachment,
+  ChatMessage,
+  MessageStats,
+  ToolCall,
+} from '../chat/types';
 import type { ChatTurn } from '../engine/LlamaEngine';
 import { NativeLlamaEngine } from '../engine/NativeLlamaEngine';
+import { hasVision, reasoningStyle } from '../model/capabilities';
+import type { ReasoningStyle } from '../model/capabilities';
 import { modelManager } from '../model/ModelManager';
 import {
   effectiveContextSize,
@@ -19,6 +46,44 @@ import {
 } from '../settings/settingsStore';
 
 export type Message = ChatMessage;
+
+function createToolContext(chatId: string): ToolContext {
+  return {
+    now: () => new Date(),
+    searchChats: query =>
+      conversationStore
+        .getState()
+        .conversations.filter(chat => chat.id !== chatId)
+        .flatMap(chat => {
+          const match = matchChat(chat, query);
+          return match
+            ? [
+                {
+                  title: chat.title,
+                  snippet:
+                    match.snippet ??
+                    (chat.messages[0]?.content ?? '').slice(0, 120),
+                },
+              ]
+            : [];
+        })
+        .slice(0, 5),
+    remember: fact => memoryStore.add(fact),
+  };
+}
+
+function defaultPrompt(attachments: Attachment[]) {
+  const images = attachments.filter(item => item.kind === 'image').length;
+  const documents = attachments.length - images;
+
+  if (images > 0 && documents === 0) {
+    return images === 1 ? "What's in this image?" : "What's in these images?";
+  }
+
+  return documents === 1 && images === 0
+    ? 'Summarize this document.'
+    : 'Summarize these attachments.';
+}
 export type GenerationPhase = 'idle' | 'loading' | 'generating';
 
 export type GenerationStats = {
@@ -43,20 +108,29 @@ export function useChat() {
   const titleRef = useRef<Promise<void> | null>(null);
 
   const generateTitle = useCallback(
-    async (chatId: string, turns: ChatTurn[], contextSize: number) => {
+    async (
+      chatId: string,
+      turns: ChatTurn[],
+      contextSize: number,
+      reasoning: ReasoningStyle,
+    ) => {
       try {
+        const request =
+          reasoning === 'toggle' ? `${TITLE_REQUEST} ${NO_THINK}` : TITLE_REQUEST;
         const result = await engine.generate(
-          [...turns, { role: 'user', content: TITLE_REQUEST }],
+          [...turns, { role: 'user', content: request }],
           () => undefined,
           {
-            maxTokens: 24,
+            maxTokens: reasoning === 'always' ? 400 : 24,
             temperature: 0.2,
             topP: 0.9,
             repeatPenalty: 1.1,
             contextSize,
           },
         );
-        const title = result ? cleanGeneratedTitle(result.text) : null;
+        const title = result
+          ? cleanGeneratedTitle(stripReasoning(result.text))
+          : null;
 
         if (title) {
           conversationStore.setGeneratedTitle(chatId, title);
@@ -98,6 +172,7 @@ export function useChat() {
 
     if (current && last?.role === 'assistant' && last.content.length === 0) {
       conversationStore.setMessages(current.id, current.messages.slice(0, -1));
+      conversationStore.discardEmptyBranch(current.id);
     }
 
     await engine.stopGeneration();
@@ -139,14 +214,19 @@ export function useChat() {
           return;
         }
 
+        await memoryStore.hydrate();
         const settings = settingsStore.getState();
+        const memory = memoryStore.getState();
         const chat =
           conversationStore
             .getState()
             .conversations.find(item => item.id === chatId) ?? null;
-        const systemPrompt = chat?.systemPrompt?.trim()
-          ? chat.systemPrompt
-          : settings.systemPrompt;
+        const systemPrompt = buildSystemPrompt({
+          chat: chat?.systemPrompt,
+          project: conversationStore.getProject(chat?.projectId)?.instructions,
+          global: settings.systemPrompt,
+          memory: memory.enabled ? memory.items.map(item => item.text) : [],
+        });
         const selected = modelManager.getState().selectedModel;
 
         if (selected) {
@@ -157,7 +237,24 @@ export function useChat() {
           settings.contextSize,
           selected?.contextTrain,
         );
-        const maxTokens = Math.min(settings.maxTokens, contextSize / 2);
+        const reasoning = reasoningStyle(selected);
+        const thinks =
+          reasoning === 'always' || (reasoning === 'toggle' && settings.thinking);
+        // Thinking eats into the reply budget, so reasoning models get more.
+        const maxTokens = Math.min(
+          thinks ? Math.max(settings.maxTokens, THINKING_MIN_TOKENS) : settings.maxTokens,
+          contextSize / 2,
+        );
+        const useTools = settings.tools;
+        const fullPrompt = useTools
+          ? buildSystemPrompt({
+              chat: chat?.systemPrompt,
+              project: conversationStore.getProject(chat?.projectId)?.instructions,
+              global: settings.systemPrompt,
+              memory: memory.enabled ? memory.items.map(item => item.text) : [],
+              tools: toolsPrompt(),
+            })
+          : systemPrompt;
         await engine.loadModel({ contextSize });
 
         if (generationRef.current !== gen) {
@@ -166,69 +263,121 @@ export function useChat() {
 
         setPhase('generating');
         generatedAt = Date.now();
-        const turns = messagesToTurns(
-          history,
-          systemPrompt,
-          coarseHistoryBudget(contextSize, maxTokens),
+        const baseTurns = withThinkingSwitch(
+          messagesToTurns(
+            history,
+            fullPrompt,
+            coarseHistoryBudget(contextSize, maxTokens),
+            {
+              documentChars: documentBudgetChars(contextSize, maxTokens),
+              vision: hasVision(selected),
+            },
+          ),
+          reasoning,
+          settings.thinking,
         );
-        const result = await engine.generate(
-          turns,
-          token => {
-            if (generationRef.current !== gen) {
-              return;
-            }
+        let turns = baseTurns;
+        const toolContext = createToolContext(chatId);
+        const toolCalls: ToolCall[] = [];
+        let earlier = '';
+        let generatedTokens = 0;
+        let usedGpu = false;
+        const show = (content: string) => {
+          displayed = displayed.map(message =>
+            message.id === assistantMessage.id
+              ? {
+                  ...message,
+                  content,
+                  ...(toolCalls.length ? { toolCalls: [...toolCalls] } : {}),
+                }
+              : message,
+          );
+          conversationStore.setMessages(chatId, displayed);
+        };
 
-            tokens += 1;
+        for (let round = 0; ; round += 1) {
+          let current = '';
+          const result = await engine.generate(
+            turns,
+            token => {
+              if (generationRef.current !== gen) {
+                return;
+              }
 
-            if (firstTokenAt == null) {
-              firstTokenAt = Date.now();
-            }
+              tokens += 1;
+              current += token;
 
-            const elapsed = (Date.now() - generatedAt) / 1000;
-            setStats({
-              tokensPerSecond: elapsed >= 0.4 ? tokens / elapsed : null,
-              timeToFirstTokenMs: firstTokenAt - startedAt,
-            });
-            displayed = displayed.map(message =>
-              message.id === assistantMessage.id
-                ? { ...message, content: message.content + token }
-                : message,
-            );
-            conversationStore.setMessages(chatId, displayed);
-          },
-          {
-            maxTokens,
-            temperature: settings.temperature,
-            topP: settings.topP,
-            topK: settings.topK,
-            minP: settings.minP,
-            repeatPenalty: settings.repeatPenalty,
-            seed: settings.seed,
-            stop: settings.stopSequences,
-            contextSize,
-          },
-        );
+              if (firstTokenAt == null) {
+                firstTokenAt = Date.now();
+              }
 
-        if (generationRef.current !== gen || !result) {
-          return;
+              const elapsed = (Date.now() - generatedAt) / 1000;
+              setStats({
+                tokensPerSecond: elapsed >= 0.4 ? tokens / elapsed : null,
+                timeToFirstTokenMs: firstTokenAt - startedAt,
+              });
+              show(earlier + (useTools ? visibleToolText(current) : current));
+            },
+            {
+              maxTokens,
+              temperature: settings.temperature,
+              topP: settings.topP,
+              topK: settings.topK,
+              minP: settings.minP,
+              repeatPenalty: settings.repeatPenalty,
+              seed: settings.seed,
+              stop: useTools
+                ? [...settings.stopSequences, TOOL_CALL_CLOSE]
+                : settings.stopSequences,
+              contextSize,
+            },
+          );
+
+          if (generationRef.current !== gen || !result) {
+            return;
+          }
+
+          generatedTokens += result.generatedTokens;
+          usedGpu = result.gpu;
+          const call =
+            useTools && round < MAX_TOOL_ROUNDS ? findToolCall(current) : null;
+
+          if (!call) {
+            show(earlier + current);
+            break;
+          }
+
+          const executed = runTool(call, toolContext);
+          toolCalls.push(executed);
+          earlier += call.before;
+          show(earlier);
+          turns = [
+            ...turns,
+            {
+              role: 'assistant',
+              content: `${stripReasoning(call.before)}${call.raw}`.trim(),
+            },
+            { role: 'user', content: toolResponseTurn(executed) },
+          ];
         }
 
         const finishedAt = Date.now();
         const decodeSeconds =
           firstTokenAt != null ? (finishedAt - firstTokenAt) / 1000 : 0;
         const messageStats: MessageStats = {
-          tokens: result.generatedTokens,
-          gpu: result.gpu,
+          tokens: generatedTokens,
+          gpu: usedGpu,
           timeToFirstTokenMs:
             firstTokenAt != null ? firstTokenAt - startedAt : null,
           tokensPerSecond:
-            result.generatedTokens > 1 && decodeSeconds > 0
-              ? (result.generatedTokens - 1) / decodeSeconds
+            generatedTokens > 1 && decodeSeconds > 0
+              ? (generatedTokens - 1) / decodeSeconds
               : null,
         };
-        const reply =
+        const reply = stripReasoning(
           displayed.find(item => item.id === assistantMessage.id)?.content ??
-          '';
+            '',
+        );
         displayed = displayed.map(item =>
           item.id === assistantMessage.id
             ? { ...item, stats: messageStats }
@@ -251,8 +400,12 @@ export function useChat() {
         ) {
           titleRef.current = generateTitle(
             chatId,
-            [...turns, { role: 'assistant', content: reply }],
+            [
+              ...baseTurns.map(({ images: _images, ...turn }) => turn),
+              { role: 'assistant', content: reply },
+            ],
             contextSize,
+            reasoning,
           ).finally(() => {
             titleRef.current = null;
           });
@@ -285,10 +438,10 @@ export function useChat() {
   );
 
   const sendMessage = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, attachments: Attachment[] = []) => {
       const trimmed = prompt.trim();
 
-      if (!trimmed || busyRef.current) {
+      if ((!trimmed && attachments.length === 0) || busyRef.current) {
         return;
       }
 
@@ -303,7 +456,8 @@ export function useChat() {
       const userMessage: ChatMessage = {
         id: createId(),
         role: 'user',
-        content: trimmed,
+        content: trimmed || defaultPrompt(attachments),
+        ...(attachments.length ? { attachments } : {}),
       };
       await runGeneration(chat.id, [...chat.messages, userMessage]);
     },
@@ -328,11 +482,14 @@ export function useChat() {
         return;
       }
 
+      const original = chat.messages[index];
       const userMessage: ChatMessage = {
         id: createId(),
         role: 'user',
         content: trimmed,
+        ...(original.attachments ? { attachments: original.attachments } : {}),
       };
+      conversationStore.beginBranch(chat.id, index);
       await runGeneration(chat.id, [
         ...chat.messages.slice(0, index),
         userMessage,
@@ -372,17 +529,31 @@ export function useChat() {
         return;
       }
 
+      conversationStore.beginBranch(chat.id, userIndex + 1);
       await runGeneration(chat.id, chat.messages.slice(0, userIndex + 1));
     },
     [runGeneration],
   );
 
-  const newChat = useCallback(async () => {
-    await conversationStore.hydrate();
-    await stopGeneration();
-    conversationStore.startNew();
-    setStats(null);
-  }, [stopGeneration]);
+  const switchBranch = useCallback((index: number, target: number) => {
+    const chat = conversationStore.getActive();
+
+    if (!chat || busyRef.current) {
+      return;
+    }
+
+    conversationStore.switchBranch(chat.id, index, target);
+  }, []);
+
+  const newChat = useCallback(
+    async (projectId?: string) => {
+      await conversationStore.hydrate();
+      await stopGeneration();
+      conversationStore.startNew(projectId);
+      setStats(null);
+    },
+    [stopGeneration],
+  );
 
   const openChat = useCallback(
     async (id: string) => {
@@ -431,6 +602,17 @@ export function useChat() {
     conversationStore.rename(id, title);
   }, []);
 
+  const archiveChat = useCallback(
+    async (id: string, archived: boolean) => {
+      if (archived && conversationStore.getState().activeId === id) {
+        await stopGeneration();
+      }
+
+      conversationStore.setArchived(id, archived);
+    },
+    [stopGeneration],
+  );
+
   const assignModel = useCallback((modelId: string) => {
     const id = conversationStore.getState().activeId;
 
@@ -451,7 +633,11 @@ export function useChat() {
 
   return {
     messages: active?.messages ?? [],
+    branches: active?.branches,
+    activeProject:
+      state.projects.find(project => project.id === active?.projectId) ?? null,
     conversations: state.conversations,
+    projects: state.projects,
     activeId: state.activeId,
     instructionPrompt: active?.systemPrompt ?? '',
     storageError: state.saveError,
@@ -461,11 +647,23 @@ export function useChat() {
     sendMessage,
     editAndResend,
     regenerate,
+    switchBranch,
     stopGeneration,
     newChat,
     openChat,
     deleteChat,
     renameChat,
+    archiveChat,
+    pinChat: (id: string, pinned: boolean) =>
+      conversationStore.setPinned(id, pinned),
+    moveChat: (id: string, projectId: string | null) =>
+      conversationStore.moveToProject(id, projectId),
+    createProject: (name: string) => conversationStore.createProject(name),
+    renameProject: (id: string, name: string) =>
+      conversationStore.renameProject(id, name),
+    setProjectInstructions: (id: string, text: string) =>
+      conversationStore.setProjectInstructions(id, text),
+    deleteProject: (id: string) => conversationStore.removeProject(id),
     assignModel,
     setInstruction,
   };

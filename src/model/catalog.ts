@@ -7,6 +7,8 @@ type Family = {
   defaultQuant: string;
   repo: string;
   files: Array<[quant: string, sizeBytes: number, filename: string]>;
+  reasoning?: boolean;
+  projector?: [sizeBytes: number, filename: string];
 };
 
 const FAMILIES: Family[] = [
@@ -142,6 +144,66 @@ const FAMILIES: Family[] = [
       ['Q8_0', 3616088480, 'qwen2.5-3b-instruct-q8_0.gguf'],
     ],
   },
+  {
+    family: 'qwen3-0.6b',
+    name: 'Qwen3 0.6B',
+    description: 'Tiny reasoning model. Thinks step by step before answering; turn Think off for quick replies.',
+    defaultQuant: 'Q4_K_M',
+    repo: 'unsloth/Qwen3-0.6B-GGUF',
+    reasoning: true,
+    files: [
+      ['Q4_K_M', 396705472, 'Qwen3-0.6B-Q4_K_M.gguf'],
+      ['Q8_0', 639447744, 'Qwen3-0.6B-Q8_0.gguf'],
+    ],
+  },
+  {
+    family: 'qwen3-1.7b',
+    name: 'Qwen3 1.7B',
+    description: 'Reasoning model with tool use. The best balance for math, logic, and Tools on a phone.',
+    defaultQuant: 'Q4_K_M',
+    repo: 'unsloth/Qwen3-1.7B-GGUF',
+    reasoning: true,
+    files: [
+      ['Q4_K_M', 1107409472, 'Qwen3-1.7B-Q4_K_M.gguf'],
+      ['Q8_0', 1834426944, 'Qwen3-1.7B-Q8_0.gguf'],
+    ],
+  },
+  {
+    family: 'qwen3-4b',
+    name: 'Qwen3 4B',
+    description: 'Strongest reasoning here. Needs a recent iPhone with 8 GB of RAM.',
+    defaultQuant: 'Q4_K_M',
+    repo: 'unsloth/Qwen3-4B-GGUF',
+    reasoning: true,
+    files: [['Q4_K_M', 2497281312, 'Qwen3-4B-Q4_K_M.gguf']],
+  },
+  {
+    family: 'smolvlm2-500m',
+    name: 'SmolVLM2 500M Vision',
+    description: 'Tiny model that can see. Describe photos, read screenshots and signs.',
+    defaultQuant: 'Q8_0',
+    repo: 'ggml-org/SmolVLM2-500M-Video-Instruct-GGUF',
+    projector: [108785184, 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf'],
+    files: [['Q8_0', 436808704, 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf']],
+  },
+  {
+    family: 'smolvlm2-2.2b',
+    name: 'SmolVLM2 2.2B Vision',
+    description: 'Better image understanding and chat than the 500M model.',
+    defaultQuant: 'Q4_K_M',
+    repo: 'ggml-org/SmolVLM2-2.2B-Instruct-GGUF',
+    projector: [592523200, 'mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf'],
+    files: [['Q4_K_M', 1112602656, 'SmolVLM2-2.2B-Instruct-Q4_K_M.gguf']],
+  },
+  {
+    family: 'qwen2.5-vl-3b',
+    name: 'Qwen2.5-VL 3B Vision',
+    description: 'Best at reading text, charts, and documents in images. Needs plenty of RAM.',
+    defaultQuant: 'Q4_K_M',
+    repo: 'ggml-org/Qwen2.5-VL-3B-Instruct-GGUF',
+    projector: [844757728, 'mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf'],
+    files: [['Q4_K_M', 1929901056, 'Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf']],
+  },
 ];
 
 function toCatalogModel(family: Family): CatalogModel {
@@ -162,6 +224,15 @@ function toCatalogModel(family: Family): CatalogModel {
     name: family.name,
     description: family.description,
     variants,
+    ...(family.reasoning ? { reasoning: true } : {}),
+    ...(family.projector
+      ? {
+          projector: {
+            sizeBytes: family.projector[0],
+            url: `https://huggingface.co/${family.repo}/resolve/main/${family.projector[1]}`,
+          },
+        }
+      : {}),
   };
 }
 

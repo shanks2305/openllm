@@ -30,6 +30,10 @@ export function modelFilePath(id: string) {
   return `${modelsDir()}/${id}.gguf`;
 }
 
+export function projectorFilePath(id: string) {
+  return `${modelsDir()}/${id}.mmproj.gguf`;
+}
+
 export function partialModelPath(id: string) {
   return `${modelFilePath(id)}.part`;
 }

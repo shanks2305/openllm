@@ -7,10 +7,17 @@ export type CatalogVariant = {
   url: string;
 };
 
+export type CatalogProjector = {
+  url: string;
+  sizeBytes: number;
+};
+
 export type CatalogModel = CatalogVariant & {
   name: string;
   description: string;
   variants: CatalogVariant[];
+  reasoning?: boolean;
+  projector?: CatalogProjector;
 };
 
 export type InstalledModel = {
@@ -22,6 +29,8 @@ export type InstalledModel = {
   origin?: string;
   downloadedAt: number;
   contextTrain?: number;
+  // Vision encoder (mmproj GGUF) that lets the model read images.
+  projectorPath?: string;
 };
 
 export type Manifest = {
@@ -32,6 +41,7 @@ export type Manifest = {
 export type DownloadProgress = {
   bytesWritten: number;
   contentLength: number;
+  label?: string;
 };
 
 export type InterruptedDownload = {

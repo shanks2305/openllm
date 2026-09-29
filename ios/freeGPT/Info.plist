@@ -35,6 +35,12 @@
 	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>llmOS uses the microphone for dictation. Audio is transcribed on this device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>llmOS turns your speech into text on this device so you can dictate messages.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>llmOS lets you attach photos to a message for vision models running on this device.</string>
 	<key>RCTNewArchEnabled</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -1,4 +1,5 @@
 import { highlightCode } from '../src/chat/highlight';
+import { latexToUnicode } from '../src/chat/latex';
 import { parseMarkdown } from '../src/chat/markdown';
 
 describe('parseMarkdown blocks', () => {
@@ -50,6 +51,72 @@ describe('highlightCode', () => {
 
   it('leaves unlabelled code plain', () => {
     expect(highlightCode('if x', '')).toEqual([{ type: 'plain', text: 'if x' }]);
+  });
+});
+
+describe('latexToUnicode', () => {
+  it('turns common math into readable text', () => {
+    expect(latexToUnicode('x^2 + y_{1} \\le \\frac{a}{b}')).toBe('x² + y₁ ≤ a/b');
+    expect(latexToUnicode('\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}')).toBe(
+      '(-b ± √(b²-4ac))/2a',
+    );
+    expect(latexToUnicode('\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}')).toBe(
+      '∑ᵢ₌₁ⁿ i = (n(n+1))/2',
+    );
+    expect(latexToUnicode('\\mathbb{R}^n \\to \\text{real}')).toBe('ℝⁿ → real');
+    expect(latexToUnicode('e^{i\\pi}')).toBe('e^(iπ)');
+  });
+});
+
+describe('parseMarkdown extras', () => {
+  it('reads a table with alignment', () => {
+    const [table] = parseMarkdown(
+      '| Name | Qty |\n|:-----|----:|\n| Apples | 3 |\n| Pears | **12** |',
+    );
+
+    expect(table).toMatchObject({ type: 'table', align: ['left', 'right'] });
+
+    if (table.type === 'table') {
+      expect(table.header.map(cell => cell[0].text)).toEqual(['Name', 'Qty']);
+      expect(table.rows).toHaveLength(2);
+      expect(table.rows[1][1]).toEqual([{ type: 'bold', text: '12' }]);
+    }
+  });
+
+  it('reads display math and inline math but leaves prices alone', () => {
+    const blocks = parseMarkdown(
+      'Area is $\\pi r^2$ and costs $5 or $10.\n\n$$\nE = mc^2\n$$',
+    );
+
+    expect(blocks[0]).toMatchObject({ type: 'paragraph' });
+
+    if (blocks[0].type === 'paragraph') {
+      expect(blocks[0].spans.filter(span => span.type === 'math')).toEqual([
+        { type: 'math', text: 'π r²' },
+      ]);
+      expect(
+        blocks[0].spans.map(span => span.text).join(''),
+      ).toContain('costs $5 or $10.');
+    }
+
+    expect(blocks[1]).toEqual({ type: 'math', value: 'E = mc²' });
+  });
+
+  it('reads nested lists, tasks, and strikethrough', () => {
+    const [list] = parseMarkdown(
+      '- top\n  1. inner\n  2. ~~old~~\n- [x] done',
+    );
+
+    expect(list).toMatchObject({
+      type: 'list',
+      markers: ['•', '1.', '2.', '•'],
+      depths: [0, 1, 1, 0],
+    });
+
+    if (list.type === 'list') {
+      expect(list.items[2]).toEqual([{ type: 'strike', text: 'old' }]);
+      expect(list.items[3][0].text).toBe('☑ done');
+    }
   });
 });
 

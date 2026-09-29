@@ -15,6 +15,7 @@
 		DAD72B2B3039D1CA006C712A /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DAD72B2A3039D1CA006C712A /* llama.xcframework */; };
 		DAD72B2C3039D1CA006C712A /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DAD72B2A3039D1CA006C712A /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DAF4B18030387AF400B45316 /* LlamaModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = DAF4B17F30387AF000B45316 /* LlamaModule.mm */; };
+		DAF4B19030387B0000B45316 /* MediaModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = DAF4B19130387B0000B45316 /* MediaModule.mm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -45,6 +46,7 @@
 		DAF4B17D30387ADB00B45316 /* LlamaModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LlamaModule.h; sourceTree = "<group>"; };
 		DAF4B17F30387AF000B45316 /* LlamaModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = LlamaModule.mm; sourceTree = "<group>"; };
 		DAF4B18130387AF600B45316 /* freeGPT-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "freeGPT-Bridging-Header.h"; sourceTree = "<group>"; };
+		DAF4B19130387B0000B45316 /* MediaModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = MediaModule.mm; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -66,6 +68,7 @@
 			children = (
 				DAF4B17F30387AF000B45316 /* LlamaModule.mm */,
 				DAF4B17D30387ADB00B45316 /* LlamaModule.h */,
+				DAF4B19130387B0000B45316 /* MediaModule.mm */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
@@ -275,6 +278,7 @@
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 				DAF4B18030387AF400B45316 /* LlamaModule.mm in Sources */,
+				DAF4B19030387B0000B45316 /* MediaModule.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -310,6 +314,14 @@
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
+					"-framework",
+					AVFoundation,
+					"-framework",
+					PDFKit,
+					"-framework",
+					PhotosUI,
+					"-framework",
+					Speech,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = freeGPT;
@@ -350,6 +362,14 @@
 					"$(inherited)",
 					"-ObjC",
 					"-lc++",
+					"-framework",
+					AVFoundation,
+					"-framework",
+					PDFKit,
+					"-framework",
+					PhotosUI,
+					"-framework",
+					Speech,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = freeGPT;
