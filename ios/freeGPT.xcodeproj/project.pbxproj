@@ -11,6 +11,7 @@
 		0C80B921A6F3F58F76C31292 /* libPods-freeGPT.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-freeGPT.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
+		E7A1C0DE30387B0000B45302 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7A1C0DE30387B0000B45301 /* SceneDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		DAD72B2B3039D1CA006C712A /* llama.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = DAD72B2A3039D1CA006C712A /* llama.xcframework */; };
 		DAD72B2C3039D1CA006C712A /* llama.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = DAD72B2A3039D1CA006C712A /* llama.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -41,6 +42,7 @@
 		5709B34CF0A7D63546082F79 /* Pods-freeGPT.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-freeGPT.release.xcconfig"; path = "Target Support Files/Pods-freeGPT/Pods-freeGPT.release.xcconfig"; sourceTree = "<group>"; };
 		5DCACB8F33CDC322A6C60F78 /* libPods-freeGPT.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-freeGPT.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = freeGPT/AppDelegate.swift; sourceTree = "<group>"; };
+		E7A1C0DE30387B0000B45301 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SceneDelegate.swift; path = freeGPT/SceneDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = freeGPT/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		DAD72B2A3039D1CA006C712A /* llama.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = llama.xcframework; path = Frameworks/llama.xcframework; sourceTree = "<group>"; };
 		DAF4B17D30387ADB00B45316 /* LlamaModule.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = LlamaModule.h; sourceTree = "<group>"; };
@@ -71,6 +73,7 @@
 				DAF4B19130387B0000B45316 /* MediaModule.mm */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				E7A1C0DE30387B0000B45301 /* SceneDelegate.swift */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -277,6 +280,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				E7A1C0DE30387B0000B45302 /* SceneDelegate.swift in Sources */,
 				DAF4B18030387AF400B45316 /* LlamaModule.mm in Sources */,
 				DAF4B19030387B0000B45316 /* MediaModule.mm in Sources */,
 			);
@@ -292,6 +296,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HV7A9QS7NF;
 				ENABLE_BITCODE = NO;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
@@ -324,6 +329,7 @@
 					Speech,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.shishir.openllm;
 				PRODUCT_NAME = freeGPT;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OBJC_BRIDGING_HEADER = "freeGPT-Bridging-Header.h";
@@ -341,6 +347,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = HV7A9QS7NF;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\"${PODS_ROOT}/React-Core-prebuilt\"",
@@ -372,6 +379,7 @@
 					Speech,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
+				"PRODUCT_BUNDLE_IDENTIFIER[sdk=iphoneos*]" = com.shishir.openllm;
 				PRODUCT_NAME = freeGPT;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OBJC_BRIDGING_HEADER = "freeGPT-Bridging-Header.h";
